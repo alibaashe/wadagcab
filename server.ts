@@ -794,23 +794,35 @@ Return ONLY valid JSON matching this schema:
       created_at: req.body.created_at || new Date().toISOString(),
     };
 
-    // Update existing transaction in place or unshift if new
+    // Single Execution & Row Locking Check
     const existingIdx = dbService.store.wallet_transactions.findIndex((t: any) => t.id === tx.id);
+    let wasAlreadyCompleted = false;
+
     if (existingIdx >= 0) {
+      const existingTx = dbService.store.wallet_transactions[existingIdx];
+      const prevStatus = String(existingTx.status || '').toLowerCase();
+      if (prevStatus === 'completed' || prevStatus === 'verified') {
+        wasAlreadyCompleted = true;
+      }
       dbService.store.wallet_transactions[existingIdx] = {
-        ...dbService.store.wallet_transactions[existingIdx],
+        ...existingTx,
         ...tx,
       };
     } else {
       dbService.store.wallet_transactions.unshift(tx);
     }
 
+    const currentStatus = String(tx.status || '').toLowerCase();
+    const isNewCompletion = !wasAlreadyCompleted &&
+      !req.body.alreadyCreditedOnFrontend &&
+      (currentStatus === 'completed' || currentStatus === 'verified');
+
     // Direct Asynchronous Sync to Live Hostinger MySQL database
     dbService.syncTransactionToMySQL(tx).catch(() => {});
 
-    // Sync updated driver wallet balance in memory store & MySQL
+    // Sync updated driver wallet balance in memory store & MySQL ONLY IF newly completed
     let updatedDriver: any = null;
-    if (tx.driverId || tx.driverPhone) {
+    if (isNewCompletion && (tx.driverId || tx.driverPhone)) {
       const cleanPhone = String(tx.driverPhone || '').replace(/\D/g, '');
       const driver = dbService.store.drivers.find(
         (d: any) =>
@@ -818,7 +830,7 @@ Return ONLY valid JSON matching this schema:
           (tx.driverPhone && d.phone === tx.driverPhone) ||
           (cleanPhone && d.phone && String(d.phone).replace(/\D/g, '') === cleanPhone)
       );
-      if (driver && tx.status === 'completed') {
+      if (driver) {
         const curBal = Number(driver.wallet_balance_usd ?? driver.walletBalanceUsd ?? 0);
         const delta = Number(tx.amountUsd ?? tx.amount_usd ?? 0);
         const newBal = Math.max(0, Math.round((curBal + delta) * 100) / 100);

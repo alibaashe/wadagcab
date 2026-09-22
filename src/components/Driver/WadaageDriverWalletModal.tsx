@@ -104,7 +104,7 @@ export const WadaageDriverWalletModal: React.FC<WadaageDriverWalletModalProps> =
 
   const handleTopUpSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (selectedAmount <= 0) return;
+    if (isProcessing || selectedAmount <= 0) return;
 
     setIsProcessing(true);
     setErrorMsg(null);

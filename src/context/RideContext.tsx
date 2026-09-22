@@ -2562,15 +2562,23 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setDriverWalletTransactions((prev) =>
       prev.map((tx) => {
         if (tx.id === txId) {
+          // Atomic Lock Guard: Prevent double-execution if transaction is already completed or verified
+          const curStatus = String(tx.status || '').toLowerCase();
+          if (curStatus === 'completed' || curStatus === 'verified') {
+            return tx;
+          }
+
           const finalSos = realAmountSosInput && realAmountSosInput > 0 ? realAmountSosInput : tx.amountSos;
           const finalUsd = Math.round((finalSos / 10000) * 100) / 100;
           const targetDriverId = tx.driverId || 'drv_01';
+          let calculatedNewBalUsd = 0;
 
           // 1. Credit ONLY this specific driver in driverWallets map
           setDriverWallets((w) => {
             const currentBal = w[targetDriverId] !== undefined ? w[targetDriverId] : (getDriverWalletBalance(targetDriverId) || 0);
-            const newBal = Math.max(0, Math.round((currentBal + finalUsd) * 100) / 100);
-            const updated = { ...w, [targetDriverId]: newBal };
+            calculatedNewBalUsd = Math.max(0, Math.round((currentBal + finalUsd) * 100) / 100);
+            const updated = { ...w, [targetDriverId]: calculatedNewBalUsd };
+            if (tx.driverPhone) updated[tx.driverPhone] = calculatedNewBalUsd;
             try {
               localStorage.setItem('wadaage_driver_wallets_map', JSON.stringify(updated));
             } catch (e) {
@@ -2584,12 +2592,10 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setDrivers((drvs) =>
             drvs.map((d) => {
               if (d.id === targetDriverId || d.phone === tx.driverPhone) {
-                const currentBal = d.walletBalanceUsd !== undefined ? d.walletBalanceUsd : 0;
-                const newBal = Math.max(0, Math.round((currentBal + finalUsd) * 100) / 100);
                 return {
                   ...d,
-                  walletBalanceUsd: newBal,
-                  status: newBal >= minThresholdUsd ? 'available' : d.status,
+                  walletBalanceUsd: calculatedNewBalUsd,
+                  status: calculatedNewBalUsd >= minThresholdUsd ? 'available' : d.status,
                 };
               }
               return d;
@@ -2616,13 +2622,18 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
           fetch(getApiUrl('/api/db/wallet-transactions'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(approvedTx),
+            body: JSON.stringify({
+              ...approvedTx,
+              alreadyCreditedOnFrontend: true,
+              newBalanceUsd: calculatedNewBalUsd,
+            }),
           }).catch(() => {});
           broadcastRideEvent('DRIVER_WALLET_UPDATED', {
             driverId: targetDriverId,
             driverPhone: tx.driverPhone,
             amountUsd: finalUsd,
             amountSos: finalSos,
+            newBalanceUsd: calculatedNewBalUsd,
             tx: approvedTx,
           });
           return approvedTx;
@@ -2728,7 +2739,7 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
     saveTransactionToFirestore(newTx);
 
-    // Post to backend database endpoint with explicit newBalanceUsd to prevent +2x duplication
+    // Post to backend database endpoint with explicit newBalanceUsd & alreadyCreditedOnFrontend flag
     fetch(getApiUrl('/api/db/wallet-transactions'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2741,6 +2752,8 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
         amount_usd: amountUsd,
         amountUsd,
         amountSos,
+        alreadyCreditedOnFrontend: true,
+        newBalanceUsd: calculatedNewBalanceUsd,
       }),
     }).catch(() => {});
 
