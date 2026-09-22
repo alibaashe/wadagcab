@@ -1484,18 +1484,29 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const getDriverWalletBalance = useCallback((driverId: string): number => {
     if (!driverId) return 0;
+
+    // 1. Direct lookup in driverWallets map
     if (driverWallets[driverId] !== undefined) {
       return Number(driverWallets[driverId]) || 0;
     }
+
+    // 2. Clean phone digits lookup across all map keys
     const cleanLookup = String(driverId).replace(/\D/g, '');
-    for (const [key, val] of Object.entries(driverWallets)) {
-      if (key === driverId) return Number(val) || 0;
-      if (cleanLookup && key.replace(/\D/g, '') === cleanLookup) return Number(val) || 0;
+    if (cleanLookup) {
+      for (const [key, val] of Object.entries(driverWallets)) {
+        if (key === driverId) return Number(val) || 0;
+        const kClean = key.replace(/\D/g, '');
+        if (kClean && (kClean === cleanLookup || kClean.endsWith(cleanLookup) || cleanLookup.endsWith(kClean))) {
+          return Number(val) || 0;
+        }
+      }
     }
+
+    // 3. Search in drivers array
     const targetDrv = drivers.find((d) =>
       d.id === driverId ||
       d.phone === driverId ||
-      (cleanLookup && d.phone && d.phone.replace(/\D/g, '') === cleanLookup)
+      (cleanLookup && d.phone && d.phone.replace(/\D/g, '').endsWith(cleanLookup))
     );
     if (targetDrv) {
       if (targetDrv.id && driverWallets[targetDrv.id] !== undefined) {
@@ -1507,13 +1518,31 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (targetDrv.walletBalanceUsd !== undefined) {
         return Number(targetDrv.walletBalanceUsd) || 0;
       }
+      if ((targetDrv as any).wallet_balance_usd !== undefined) {
+        return Number((targetDrv as any).wallet_balance_usd) || 0;
+      }
     }
+
+    // 4. Fallback to currentUser if matching
+    if (currentUser && currentUser.role === 'driver') {
+      const cClean = currentUser.phone ? currentUser.phone.replace(/\D/g, '') : '';
+      if (currentUser.id === driverId || currentUser.phone === driverId || (cleanLookup && cClean && cClean.endsWith(cleanLookup))) {
+        if (currentUser.walletBalanceUsd !== undefined) return Number(currentUser.walletBalanceUsd) || 0;
+        if ((currentUser as any).wallet_balance_usd !== undefined) return Number((currentUser as any).wallet_balance_usd) || 0;
+      }
+    }
+
     return 0;
-  }, [driverWallets, drivers]);
+  }, [driverWallets, drivers, currentUser]);
 
   // Current active driver balance
   const activeDriverId = currentUser?.role === 'driver' ? (currentUser.id || currentUser.phone || 'drv_01') : 'drv_01';
-  const driverWalletBalanceUsd = getDriverWalletBalance(activeDriverId) || (currentUser?.role === 'driver' && currentUser.phone ? getDriverWalletBalance(currentUser.phone) : 0);
+  const driverWalletBalanceUsd =
+    (currentUser?.role === 'driver' && currentUser.walletBalanceUsd !== undefined)
+      ? Number(currentUser.walletBalanceUsd)
+      : (currentUser?.role === 'driver' && (currentUser as any).wallet_balance_usd !== undefined)
+      ? Number((currentUser as any).wallet_balance_usd)
+      : (getDriverWalletBalance(activeDriverId) || (currentUser?.role === 'driver' && currentUser.phone ? getDriverWalletBalance(currentUser.phone) : 0));
 
   const [lowBalanceLockoutAlert, setLowBalanceLockoutAlert] = useState<boolean>(false);
   const [driverWalletTransactions, setDriverWalletTransactions] = useState<DriverWalletTransaction[]>(() => {
@@ -2257,63 +2286,14 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       } else if (type === 'DRIVER_WALLET_UPDATED') {
         const { driverId, driverPhone, amountUsd, tx, newBalanceUsd } = payload || {};
-        const targetId = driverId || driverPhone;
+        const targetId = driverId || driverPhone || tx?.driverId || tx?.driverPhone;
         if (targetId) {
-          const minThresh = pricing?.driverMinWalletThresholdUsd || 0.10;
-          let calculatedNewBal = 0;
-
-          setDriverWallets((prev) => {
-            const curBal = (driverId && prev[driverId] !== undefined)
-              ? prev[driverId]
-              : (driverPhone && prev[driverPhone] !== undefined)
-              ? prev[driverPhone]
-              : (getDriverWalletBalance(targetId) || 0);
-
-            calculatedNewBal = newBalanceUsd !== undefined
-              ? Number(newBalanceUsd)
-              : Math.max(0, Math.round((curBal + (amountUsd || 0)) * 100) / 100);
-
-            const updated = { ...prev };
-            if (driverId) updated[driverId] = calculatedNewBal;
-            if (driverPhone) updated[driverPhone] = calculatedNewBal;
-            if (currentUser?.id) updated[currentUser.id] = calculatedNewBal;
-            if (currentUser?.phone) updated[currentUser.phone] = calculatedNewBal;
-            try { localStorage.setItem('wadaage_driver_wallets_map', JSON.stringify(updated)); } catch (_e) {}
-            return updated;
-          });
-
-          setDrivers((prev) =>
-            prev.map((d) => {
-              const cleanP = driverPhone ? String(driverPhone).replace(/\D/g, '') : '';
-              const matches =
-                (driverId && d.id === driverId) ||
-                (driverPhone && d.phone === driverPhone) ||
-                (cleanP && d.phone && String(d.phone).replace(/\D/g, '') === cleanP);
-
-              if (matches) {
-                const curBal = d.walletBalanceUsd !== undefined ? d.walletBalanceUsd : 0;
-                const nextBal = newBalanceUsd !== undefined
-                  ? Number(newBalanceUsd)
-                  : Math.max(0, Math.round((curBal + (amountUsd || 0)) * 100) / 100);
-                return {
-                  ...d,
-                  walletBalanceUsd: nextBal,
-                  status: nextBal >= minThresh ? 'available' : 'offline',
-                };
-              }
-              return d;
-            })
-          );
-
-          if (currentUser && (driverId === currentUser.id || (driverPhone && currentUser.phone === driverPhone))) {
-            if (calculatedNewBal >= minThresh) {
-              setDriverModeOnline(true);
-              setLowBalanceLockoutAlert(false);
-              sounds.playAcceptedChime();
-            } else {
-              setLowBalanceLockoutAlert(true);
-            }
+          if (newBalanceUsd !== undefined) {
+            applyDriverBalanceUpdate(driverId || tx?.driverId || targetId, driverPhone || tx?.driverPhone, Number(newBalanceUsd), true);
+          } else if (amountUsd) {
+            applyDriverBalanceUpdate(driverId || tx?.driverId || targetId, driverPhone || tx?.driverPhone, Number(amountUsd), false);
           }
+
           if (tx) {
             setDriverWalletTransactions((prev) => {
               const idx = prev.findIndex((t) => t.id === tx.id);
@@ -2468,36 +2448,7 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const initialStatus: 'completed' | 'pending_verification' = isInstantCard ? 'completed' : 'pending_verification';
 
     if (isInstantCard) {
-      setDriverWallets((w) => {
-        const currentBal = w[actualDriverId] !== undefined ? w[actualDriverId] : (getDriverWalletBalance(actualDriverId) || 0);
-        const newBal = Math.max(0, Math.round((currentBal + amountUsd) * 100) / 100);
-        const updated = { ...w, [actualDriverId]: newBal };
-        try {
-          localStorage.setItem('wadaage_driver_wallets_map', JSON.stringify(updated));
-        } catch (e) {
-          console.error(e);
-        }
-        return updated;
-      });
-
-      setDrivers((drvs) =>
-        drvs.map((d) => {
-          if (d.id === actualDriverId || d.phone === actualDriverPhone) {
-            const currentBal = d.walletBalanceUsd !== undefined ? d.walletBalanceUsd : 0;
-            const newBal = Math.max(0, Math.round((currentBal + amountUsd) * 100) / 100);
-            return {
-              ...d,
-              walletBalanceUsd: newBal,
-              status: newBal >= (pricing.driverMinWalletThresholdUsd || 0.10) ? 'available' : d.status,
-            };
-          }
-          return d;
-        })
-      );
-
-      if (actualDriverId === currentUser?.id || currentUser?.phone === actualDriverPhone) {
-        setLowBalanceLockoutAlert(false);
-      }
+      applyDriverBalanceUpdate(actualDriverId, actualDriverPhone, amountUsd, false);
     }
 
     const newTx: DriverWalletTransaction = {
@@ -2557,6 +2508,112 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
     verifyAndApproveDriverTopUp(txId, 0);
   };
 
+  // Helper to mutate driver balance across ALL key aliases, drivers state array, currentUser, and localStorage
+  const applyDriverBalanceUpdate = (
+    targetDriverId: string,
+    targetDriverPhone: string | undefined,
+    incomingUsdAmount: number,
+    isAbsoluteBalance: boolean = false
+  ): number => {
+    const targetPhone = targetDriverPhone || '';
+    const cleanPhone = targetPhone ? targetPhone.replace(/\D/g, '') : (targetDriverId ? targetDriverId.replace(/\D/g, '') : '');
+
+    // Locate target driver in drivers list
+    const foundDriver = drivers.find(
+      (d) =>
+        d.id === targetDriverId ||
+        (targetPhone && d.phone === targetPhone) ||
+        (cleanPhone && d.phone && String(d.phone).replace(/\D/g, '').endsWith(cleanPhone))
+    );
+
+    const actualId = foundDriver?.id || targetDriverId;
+    const actualPhone = foundDriver?.phone || targetPhone;
+
+    // Get current balance
+    const currentBalUsd = getDriverWalletBalance(actualId) || (actualPhone ? getDriverWalletBalance(actualPhone) : 0);
+    const newBalUsd = isAbsoluteBalance
+      ? Math.max(0, Math.round(incomingUsdAmount * 100) / 100)
+      : Math.max(0, Math.round((currentBalUsd + incomingUsdAmount) * 100) / 100);
+
+    // 1. Mutate driverWallets map across ALL key aliases simultaneously
+    setDriverWallets((prev) => {
+      const updated = { ...prev };
+      if (actualId) updated[actualId] = newBalUsd;
+      if (targetDriverId) updated[targetDriverId] = newBalUsd;
+      if (actualPhone) updated[actualPhone] = newBalUsd;
+      if (targetPhone) updated[targetPhone] = newBalUsd;
+      if (cleanPhone) {
+        updated[cleanPhone] = newBalUsd;
+        updated[`+252 ${cleanPhone}`] = newBalUsd;
+      }
+      if (currentUser && (currentUser.id === actualId || currentUser.phone === actualPhone || (cleanPhone && currentUser.phone?.replace(/\D/g, '').endsWith(cleanPhone)))) {
+        updated[currentUser.id] = newBalUsd;
+        if (currentUser.phone) updated[currentUser.phone] = newBalUsd;
+      }
+      try {
+        localStorage.setItem('wadaage_driver_wallets_map', JSON.stringify(updated));
+        localStorage.setItem('wadaage_v2_wallets', JSON.stringify(updated));
+      } catch (e) {
+        console.error(e);
+      }
+      return updated;
+    });
+
+    // 2. Mutate drivers array
+    const minThresholdUsd = pricing?.driverMinWalletThresholdUsd || 0.10;
+    setDrivers((prev) =>
+      prev.map((d) => {
+        const dClean = d.phone ? d.phone.replace(/\D/g, '') : '';
+        const matches =
+          d.id === actualId ||
+          d.id === targetDriverId ||
+          (actualPhone && d.phone === actualPhone) ||
+          (targetPhone && d.phone === targetPhone) ||
+          (cleanPhone && dClean && (dClean === cleanPhone || dClean.endsWith(cleanPhone) || cleanPhone.endsWith(dClean)));
+
+        if (matches) {
+          return {
+            ...d,
+            walletBalanceUsd: newBalUsd,
+            wallet_balance_usd: newBalUsd,
+            status: newBalUsd >= minThresholdUsd ? 'available' : d.status,
+          };
+        }
+        return d;
+      })
+    );
+
+    // 3. Mutate currentUser if matching
+    if (currentUser && currentUser.role === 'driver') {
+      const cClean = currentUser.phone ? currentUser.phone.replace(/\D/g, '') : '';
+      const isCurrentDriver =
+        currentUser.id === actualId ||
+        currentUser.id === targetDriverId ||
+        (actualPhone && currentUser.phone === actualPhone) ||
+        (targetPhone && currentUser.phone === targetPhone) ||
+        (cleanPhone && cClean && (cClean === cleanPhone || cClean.endsWith(cleanPhone) || cleanPhone.endsWith(cClean)));
+
+      if (isCurrentDriver) {
+        setCurrentUser((prevUser) =>
+          prevUser
+            ? {
+                ...prevUser,
+                walletBalanceUsd: newBalUsd,
+                wallet_balance_usd: newBalUsd,
+              }
+            : null
+        );
+        if (newBalUsd >= minThresholdUsd) {
+          setLowBalanceLockoutAlert(false);
+          setDriverModeOnline(true);
+          sounds.playAcceptedChime();
+        }
+      }
+    }
+
+    return newBalUsd;
+  };
+
   // Admin verifies and controls real amount received for driver top-up (strictly isolates to the targeted driver only)
   const verifyAndApproveDriverTopUp = (txId: string, realAmountSosInput?: number, adminNote?: string) => {
     setDriverWalletTransactions((prev) =>
@@ -2571,43 +2628,9 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const finalSos = realAmountSosInput && realAmountSosInput > 0 ? realAmountSosInput : tx.amountSos;
           const finalUsd = Math.round((finalSos / 10000) * 100) / 100;
           const targetDriverId = tx.driverId || 'drv_01';
-          let calculatedNewBalUsd = 0;
 
-          // 1. Credit ONLY this specific driver in driverWallets map
-          setDriverWallets((w) => {
-            const currentBal = w[targetDriverId] !== undefined ? w[targetDriverId] : (getDriverWalletBalance(targetDriverId) || 0);
-            calculatedNewBalUsd = Math.max(0, Math.round((currentBal + finalUsd) * 100) / 100);
-            const updated = { ...w, [targetDriverId]: calculatedNewBalUsd };
-            if (tx.driverPhone) updated[tx.driverPhone] = calculatedNewBalUsd;
-            try {
-              localStorage.setItem('wadaage_driver_wallets_map', JSON.stringify(updated));
-            } catch (e) {
-              console.error(e);
-            }
-            return updated;
-          });
-
-          // 2. Update specific driver in drivers array
-          const minThresholdUsd = pricing.driverMinWalletThresholdUsd || 0.10;
-          setDrivers((drvs) =>
-            drvs.map((d) => {
-              if (d.id === targetDriverId || d.phone === tx.driverPhone) {
-                return {
-                  ...d,
-                  walletBalanceUsd: calculatedNewBalUsd,
-                  status: calculatedNewBalUsd >= minThresholdUsd ? 'available' : d.status,
-                };
-              }
-              return d;
-            })
-          );
-
-          const isThisDriver = currentUser && (targetDriverId === currentUser.id || (tx.driverPhone && currentUser.phone === tx.driverPhone));
-          if (isThisDriver) {
-            setDriverModeOnline(true);
-            setLowBalanceLockoutAlert(false);
-            sounds.playAcceptedChime();
-          }
+          // Apply balance update across all key aliases
+          const calculatedNewBalUsd = applyDriverBalanceUpdate(targetDriverId, tx.driverPhone, finalUsd, false);
 
           const approvedTx: DriverWalletTransaction = {
             ...tx,
@@ -2683,36 +2706,8 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
       walletBalanceUsd: 0,
     };
 
-    let calculatedNewBalanceUsd = 0;
-
-    // 1. Credit ONLY this specific driver in driverWallets map
-    setDriverWallets((prev) => {
-      const currentBal = prev[driverId] !== undefined ? prev[driverId] : (getDriverWalletBalance(driverId) || 0);
-      calculatedNewBalanceUsd = Math.max(0, Math.round((currentBal + amountUsd) * 100) / 100);
-      const updated = { ...prev, [driverId]: calculatedNewBalanceUsd };
-      if (targetDriver.phone) updated[targetDriver.phone] = calculatedNewBalanceUsd;
-      try {
-        localStorage.setItem('wadaage_driver_wallets_map', JSON.stringify(updated));
-      } catch (e) {
-        console.error(e);
-      }
-      return updated;
-    });
-
-    // 2. Update specific driver in drivers list
-    const minThresholdUsd = pricing.driverMinWalletThresholdUsd || 0.10;
-    setDrivers((prev) =>
-      prev.map((d) => {
-        if (d.id === driverId || d.phone === driverId) {
-          return {
-            ...d,
-            walletBalanceUsd: calculatedNewBalanceUsd,
-            status: calculatedNewBalanceUsd >= minThresholdUsd ? 'available' : d.status,
-          };
-        }
-        return d;
-      })
-    );
+    // Apply balance update across all key aliases
+    const calculatedNewBalanceUsd = applyDriverBalanceUpdate(targetDriver.id, targetDriver.phone, amountUsd, false);
 
     // 3. Create completed ledger transaction
     const newTx: DriverWalletTransaction = {
