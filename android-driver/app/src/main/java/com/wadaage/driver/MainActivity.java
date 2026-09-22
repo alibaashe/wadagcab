@@ -1,0 +1,5 @@
+package com.wadaage.driver;
+
+import com.getcapacitor.BridgeActivity;
+
+public class MainActivity extends BridgeActivity {}

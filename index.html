@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Wadaage - Somaliland Smart Mobility & Shared Rides (www.wadaage.com)</title>
+    <meta name="description" content="Somaliland's premier smart mobility and ride-hailing platform featuring Wadaage Share carpooling from 1,000 SLSH, private taxis, driver portal, and ZAAD & eDahab payments." />
+    <meta property="og:title" content="Wadaage - Somaliland Smart Mobility & Shared Rides" />
+    <meta property="og:description" content="Affordable shared rides, private taxis, and driver earnings in Hargeisa, Berbera, Borama, and Burco." />
+    <meta name="theme-color" content="#1D4ED8" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Wadaage" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+    <link rel="manifest" href="/manifest.json" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js').catch(() => {});
+        });
+      }
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
