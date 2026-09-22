@@ -80,24 +80,36 @@ export const WadaageAdminWalletControl: React.FC = () => {
   const [processingTxIds, setProcessingTxIds] = useState<Record<string, boolean>>({});
 
   const handleVerify = (tx: DriverWalletTransaction) => {
-    if (processingTxIds[tx.id] || (tx.status as string) === 'completed' || (tx.status as string) === 'verified') return;
+    const curStatus = String(tx.status || '').toLowerCase();
+    if (processingTxIds[tx.id] || curStatus === 'completed' || curStatus === 'verified') return;
     setProcessingTxIds((p) => ({ ...p, [tx.id]: true }));
-    const realAmountSos = editedAmounts[tx.id] !== undefined ? editedAmounts[tx.id] : tx.amountSos;
-    const note = adminNotes[tx.id] || `Verified by Admin. Amount credited: ${realAmountSos.toLocaleString()} SLSH`;
-    verifyAndApproveDriverTopUp(tx.id, realAmountSos, note);
-    setTimeout(() => {
-      setProcessingTxIds((p) => ({ ...p, [tx.id]: false }));
-    }, 1500);
+    try {
+      const realAmountSos = editedAmounts[tx.id] !== undefined ? editedAmounts[tx.id] : tx.amountSos;
+      const note = adminNotes[tx.id] || `Verified by Admin. Amount credited: ${realAmountSos.toLocaleString()} SLSH`;
+      verifyAndApproveDriverTopUp(tx.id, realAmountSos, note);
+    } catch (e) {
+      console.error('Error verifying top-up:', e);
+    } finally {
+      setTimeout(() => {
+        setProcessingTxIds((p) => ({ ...p, [tx.id]: false }));
+      }, 1000);
+    }
   };
 
   const handleReject = (tx: DriverWalletTransaction) => {
-    if (processingTxIds[tx.id] || tx.status === 'rejected') return;
+    const curStatus = String(tx.status || '').toLowerCase();
+    if (processingTxIds[tx.id] || curStatus === 'rejected') return;
     setProcessingTxIds((p) => ({ ...p, [tx.id]: true }));
-    const note = adminNotes[tx.id] || 'Rejected by Admin. Invalid payment receipt or reference.';
-    rejectDriverPendingTransaction(tx.id, note);
-    setTimeout(() => {
-      setProcessingTxIds((p) => ({ ...p, [tx.id]: false }));
-    }, 1500);
+    try {
+      const note = adminNotes[tx.id] || 'Rejected by Admin. Invalid payment receipt or reference.';
+      rejectDriverPendingTransaction(tx.id, note);
+    } catch (e) {
+      console.error('Error rejecting top-up:', e);
+    } finally {
+      setTimeout(() => {
+        setProcessingTxIds((p) => ({ ...p, [tx.id]: false }));
+      }, 1000);
+    }
   };
 
   const handleDirectCreditSubmit = (e: React.FormEvent) => {

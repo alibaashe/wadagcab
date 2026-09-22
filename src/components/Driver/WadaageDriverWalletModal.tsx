@@ -111,19 +111,24 @@ export const WadaageDriverWalletModal: React.FC<WadaageDriverWalletModalProps> =
     setSuccessMsg(null);
 
     setTimeout(() => {
-      const result = topUpDriverWallet(selectedAmount, provider, phone, referenceId, smsText);
-      setIsProcessing(false);
-      if (result.success) {
-        setSuccessMsg(result.message);
-        setReferenceId('');
-        setSmsText('');
-        setTimeout(() => {
-          setSuccessMsg(null);
-        }, 4000);
-      } else {
-        setErrorMsg(result.message);
+      try {
+        const result = topUpDriverWallet(selectedAmount, provider, phone, referenceId, smsText);
+        if (result.success) {
+          setSuccessMsg(result.message);
+          setReferenceId('');
+          setSmsText('');
+          setTimeout(() => {
+            setSuccessMsg(null);
+          }, 4000);
+        } else {
+          setErrorMsg(result.message);
+        }
+      } catch (err: any) {
+        setErrorMsg(err?.message || 'Failed to submit top-up request. Please try again.');
+      } finally {
+        setIsProcessing(false);
       }
-    }, 1000);
+    }, 600);
   };
 
   return (

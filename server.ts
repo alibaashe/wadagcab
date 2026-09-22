@@ -788,10 +788,29 @@ Return ONLY valid JSON matching this schema:
   });
 
   app.post('/api/db/wallet-transactions', (req, res) => {
+    const rawAmountSos = Number(req.body.amountSos ?? req.body.amountSlsh ?? req.body.amount_sos ?? 0);
+    const rawAmountUsd = Number(req.body.amountUsd ?? req.body.amount_usd ?? req.body.amount ?? (rawAmountSos > 0 ? rawAmountSos / 10000 : 0));
+    const status = String(req.body.status || 'PENDING').toUpperCase();
+
     const tx = {
-      id: req.body.id || `tx_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-      ...req.body,
+      id: req.body.id || `dtx_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      driverId: req.body.driverId || req.body.driver_id || req.body.user_id || req.body.userId || '',
+      driverPhone: req.body.driverPhone || req.body.driver_phone || '',
+      driverName: req.body.driverName || req.body.driver_name || 'Driver Partner',
+      type: req.body.type || req.body.transaction_type || 'TOPUP',
+      transaction_type: req.body.type || req.body.transaction_type || 'TOPUP',
+      status: status,
+      amountSos: rawAmountSos,
+      amountSlsh: rawAmountSos,
+      amountUsd: rawAmountUsd,
+      amount_usd: rawAmountUsd,
+      paymentProvider: req.body.paymentProvider || req.body.payment_provider || 'ZAAD',
+      referenceId: req.body.referenceId || req.body.reference_id || req.body.reference || '',
+      title: req.body.title || `Wallet Top-Up (${req.body.paymentProvider || 'ZAAD'})`,
+      date: req.body.date || new Date().toISOString().replace('T', ' ').substring(0, 16),
       created_at: req.body.created_at || new Date().toISOString(),
+      timestamp: req.body.timestamp || Date.now(),
+      ...req.body,
     };
 
     // Single Execution & Row Locking Check
@@ -837,6 +856,31 @@ Return ONLY valid JSON matching this schema:
         driver.wallet_balance_usd = newBal;
         driver.walletBalanceUsd = newBal;
         if (newBal >= 0.10) {
+          driver.status = 'available';
+          driver.is_online = 1;
+        } else {
+          driver.status = 'offline';
+          driver.is_online = 0;
+        }
+        updatedDriver = driver;
+        dbService.syncDriverToMySQL(driver).catch(() => {});
+      }
+    }
+
+    // Direct Override Balance set if provided
+    if (req.body.newBalanceUsd !== undefined && (tx.driverId || tx.driverPhone)) {
+      const cleanPhone = String(tx.driverPhone || '').replace(/\D/g, '');
+      const driver = dbService.store.drivers.find(
+        (d: any) =>
+          d.id === tx.driverId ||
+          (tx.driverPhone && d.phone === tx.driverPhone) ||
+          (cleanPhone && d.phone && String(d.phone).replace(/\D/g, '') === cleanPhone)
+      );
+      if (driver) {
+        const targetBal = Number(req.body.newBalanceUsd);
+        driver.wallet_balance_usd = targetBal;
+        driver.walletBalanceUsd = targetBal;
+        if (targetBal >= 0.10) {
           driver.status = 'available';
           driver.is_online = 1;
         } else {
