@@ -238,6 +238,7 @@ export const UserManagementTable: React.FC = () => {
   const [topUpUserId, setTopUpUserId] = useState<string | null>(null);
   const [topUpAmountUsd, setTopUpAmountUsd] = useState<number>(5.00);
   const [topUpSuccessMsg, setTopUpSuccessMsg] = useState<string | null>(null);
+  const [isSubmittingTopUp, setIsSubmittingTopUp] = useState<boolean>(false);
 
   const [users, setUsers] = useState<UserRecord[]>(() => loadPersistedUsers(drivers, driverApplications));
 
@@ -765,8 +766,10 @@ export const UserManagementTable: React.FC = () => {
                     </button>
                     <button
                       type="button"
+                      disabled={isSubmittingTopUp || !!topUpSuccessMsg}
                       onClick={() => {
-                        if (!targetUser) return;
+                        if (!targetUser || isSubmittingTopUp) return;
+                        setIsSubmittingTopUp(true);
                         if (isDriver) {
                           adminCreditDriverWallet(targetUser.id, topUpAmountUsd, false, `Admin Direct Top-Up for ${targetUser.name}`);
                         } else {
@@ -776,11 +779,12 @@ export const UserManagementTable: React.FC = () => {
                         setTimeout(() => {
                           setTopUpUserId(null);
                           setTopUpSuccessMsg(null);
+                          setIsSubmittingTopUp(false);
                         }, 1800);
                       }}
-                      className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-xl font-bold flex items-center space-x-1"
+                      className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-xl font-bold flex items-center space-x-1 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      <span>Credit Wallet</span>
+                      <span>{isSubmittingTopUp ? 'Crediting...' : 'Credit Wallet'}</span>
                       <ArrowUpRight className="w-4 h-4" />
                     </button>
                   </div>

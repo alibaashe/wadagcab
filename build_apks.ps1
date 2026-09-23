@@ -270,7 +270,7 @@ if ($Target -eq "menu") {
     Write-Host " [3] Build Both Rider and Driver APKs" -ForegroundColor Yellow
     Write-Host " [4] Open Rider Project in Android Studio" -ForegroundColor White
     Write-Host " [5] Open Driver Project in Android Studio" -ForegroundColor White
-    Write-Host " [6] Check Prerequisites & Environment" -ForegroundColor Magenta
+    Write-Host " [6] Check Prerequisites and Environment" -ForegroundColor Magenta
     Write-Host " [0] Exit" -ForegroundColor Gray
     Write-Host ""
 
@@ -292,8 +292,8 @@ if ($Target -eq "menu") {
             Write-Host "========================================================================" -ForegroundColor Green
             Write-Host " ALL APKS BUILT SUCCESSFULLY!" -ForegroundColor Green
             Write-Host " Check your build_output folder:" -ForegroundColor White
-            Write-Host " 1) $PSScriptRoot\build_output\Wadaage_Rider_Debug.apk" -ForegroundColor Cyan
-            Write-Host " 2) $PSScriptRoot\build_output\Wadaage_Driver_Debug.apk" -ForegroundColor Green
+            Write-Host " - Rider: $PSScriptRoot\build_output\Wadaage_Rider_Debug.apk" -ForegroundColor Cyan
+            Write-Host " - Driver: $PSScriptRoot\build_output\Wadaage_Driver_Debug.apk" -ForegroundColor Green
             Write-Host "========================================================================" -ForegroundColor Green
         }
         "4" {

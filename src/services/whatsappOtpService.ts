@@ -110,24 +110,16 @@ export async function sendWhatsAppOtp(
 /**
  * Verifies the user-entered OTP against active OTP store
  */
-export async function verifyWhatsAppOtp(phone: string, inputCode: string): Promise<OtpVerifyResult> {
+export async function verifyWhatsAppOtp(phone: string, inputCode: string, userData?: any, userRole?: string): Promise<OtpVerifyResult> {
   const normalizedPhone = formatSomalilandPhone(phone);
   const trimmedCode = inputCode.trim();
-
-  // Master bypass code for emergency administration
-  if (trimmedCode === '123456' || trimmedCode === '888888') {
-    return {
-      success: true,
-      message: '✅ Lambarkaaga WhatsApp waxaa si sax ah u xaqiijiyay Wadaage App!',
-    };
-  }
 
   // Attempt server verification first
   try {
     const res = await fetch(getApiUrl('/api/whatsapp/verify-otp'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone: normalizedPhone, inputCode: trimmedCode }),
+      body: JSON.stringify({ phone: normalizedPhone, inputCode: trimmedCode, userData, userRole }),
     });
 
     if (res.ok) {

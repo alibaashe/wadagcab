@@ -33,6 +33,7 @@ export const WadaageAdminWalletControl: React.FC = () => {
     adminDirectCreditDriverWallet,
     adminCreditUserWallet,
     drivers,
+    driverWallets,
     getDriverWalletBalance,
     getUserWalletBalance,
   } = useRide();
@@ -77,15 +78,39 @@ export const WadaageAdminWalletControl: React.FC = () => {
     setTimeout(() => setCopiedRef(null), 2000);
   };
 
+  const [processingTxIds, setProcessingTxIds] = useState<Record<string, boolean>>({});
+
   const handleVerify = (tx: DriverWalletTransaction) => {
-    const realAmountSos = editedAmounts[tx.id] !== undefined ? editedAmounts[tx.id] : tx.amountSos;
-    const note = adminNotes[tx.id] || `Verified by Admin. Amount credited: ${realAmountSos.toLocaleString()} SLSH`;
-    verifyAndApproveDriverTopUp(tx.id, realAmountSos, note);
+    const curStatus = String(tx.status || '').toLowerCase();
+    if (processingTxIds[tx.id] || curStatus === 'completed' || curStatus === 'verified') return;
+    setProcessingTxIds((p) => ({ ...p, [tx.id]: true }));
+    try {
+      const realAmountSos = editedAmounts[tx.id] !== undefined ? editedAmounts[tx.id] : tx.amountSos;
+      const note = adminNotes[tx.id] || `Verified by Admin. Amount credited: ${realAmountSos.toLocaleString()} SLSH`;
+      verifyAndApproveDriverTopUp(tx.id, realAmountSos, note);
+    } catch (e) {
+      console.error('Error verifying top-up:', e);
+    } finally {
+      setTimeout(() => {
+        setProcessingTxIds((p) => ({ ...p, [tx.id]: false }));
+      }, 1000);
+    }
   };
 
   const handleReject = (tx: DriverWalletTransaction) => {
-    const note = adminNotes[tx.id] || 'Rejected by Admin. Invalid payment receipt or reference.';
-    rejectDriverPendingTransaction(tx.id, note);
+    const curStatus = String(tx.status || '').toLowerCase();
+    if (processingTxIds[tx.id] || curStatus === 'rejected') return;
+    setProcessingTxIds((p) => ({ ...p, [tx.id]: true }));
+    try {
+      const note = adminNotes[tx.id] || 'Rejected by Admin. Invalid payment receipt or reference.';
+      rejectDriverPendingTransaction(tx.id, note);
+    } catch (e) {
+      console.error('Error rejecting top-up:', e);
+    } finally {
+      setTimeout(() => {
+        setProcessingTxIds((p) => ({ ...p, [tx.id]: false }));
+      }, 1000);
+    }
   };
 
   const handleDirectCreditSubmit = (e: React.FormEvent) => {
@@ -170,10 +195,15 @@ export const WadaageAdminWalletControl: React.FC = () => {
           <span className="text-2xl font-black text-rose-600 dark:text-rose-400">{rejectedTxs.length}</span>
         </div>
 
-        <div className="p-3 bg-slate-50 dark:bg-slate-800/60 rounded-2xl border border-slate-200 dark:border-slate-700">
-          <span className="text-slate-500 block text-[10px] font-bold uppercase">Total Verified Credited</span>
-          <span className="text-2xl font-black text-slate-900 dark:text-white font-mono">
-            {completedTxs.reduce((sum, t) => sum + t.amountSos, 0).toLocaleString()} SLSH
+        <div className="p-3 bg-[#002418] rounded-2xl border border-[#00E575]/30">
+          <span className="text-emerald-400 block text-[10px] font-extrabold uppercase tracking-wider">Total Live System Float</span>
+          <span className="text-2xl font-black text-white font-mono">
+            {Math.round(
+              drivers.reduce((sum, drv) => {
+                const balUsd = getDriverWalletBalance(drv.id) || (drv.phone ? getDriverWalletBalance(drv.phone) : 0);
+                return sum + balUsd;
+              }, 0) * 10000
+            ).toLocaleString()} SLSH
           </span>
         </div>
       </div>
@@ -313,18 +343,20 @@ export const WadaageAdminWalletControl: React.FC = () => {
                     <div className="flex items-center justify-end space-x-2 pt-1">
                       <button
                         onClick={() => handleReject(tx)}
-                        className="px-4 py-2 bg-rose-500 hover:bg-rose-600 text-white font-black rounded-xl text-xs uppercase shadow flex items-center space-x-1 transition cursor-pointer"
+                        disabled={processingTxIds[tx.id] || tx.status === 'rejected' || tx.status === 'completed'}
+                        className="px-4 py-2 bg-rose-500 hover:bg-rose-600 text-white font-black rounded-xl text-xs uppercase shadow flex items-center space-x-1 transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         <XCircle className="w-4 h-4" />
-                        <span>REJECT</span>
+                        <span>{processingTxIds[tx.id] ? 'PROCESSING...' : 'REJECT'}</span>
                       </button>
 
                       <button
                         onClick={() => handleVerify(tx)}
-                        className="px-5 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black rounded-xl text-xs uppercase shadow-lg flex items-center space-x-1.5 transition cursor-pointer"
+                        disabled={processingTxIds[tx.id] || (tx.status as string) === 'completed' || (tx.status as string) === 'verified'}
+                        className="px-5 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black rounded-xl text-xs uppercase shadow-lg flex items-center space-x-1.5 transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         <CheckCircle2 className="w-4 h-4" />
-                        <span>VERIFY & CREDIT ({currentEditedSos.toLocaleString()} SLSH)</span>
+                        <span>{processingTxIds[tx.id] ? 'VERIFYING & CREDITING...' : `VERIFY & CREDIT (${currentEditedSos.toLocaleString()} SLSH)`}</span>
                       </button>
                     </div>
                   </div>

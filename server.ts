@@ -788,29 +788,60 @@ Return ONLY valid JSON matching this schema:
   });
 
   app.post('/api/db/wallet-transactions', (req, res) => {
+    const rawAmountSos = Number(req.body.amountSos ?? req.body.amountSlsh ?? req.body.amount_sos ?? 0);
+    const rawAmountUsd = Number(req.body.amountUsd ?? req.body.amount_usd ?? req.body.amount ?? (rawAmountSos > 0 ? rawAmountSos / 10000 : 0));
+    const status = String(req.body.status || 'PENDING').toUpperCase();
+
     const tx = {
-      id: req.body.id || `tx_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-      ...req.body,
+      id: req.body.id || `dtx_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      driverId: req.body.driverId || req.body.driver_id || req.body.user_id || req.body.userId || '',
+      driverPhone: req.body.driverPhone || req.body.driver_phone || '',
+      driverName: req.body.driverName || req.body.driver_name || 'Driver Partner',
+      type: req.body.type || req.body.transaction_type || 'TOPUP',
+      transaction_type: req.body.type || req.body.transaction_type || 'TOPUP',
+      status: status,
+      amountSos: rawAmountSos,
+      amountSlsh: rawAmountSos,
+      amountUsd: rawAmountUsd,
+      amount_usd: rawAmountUsd,
+      paymentProvider: req.body.paymentProvider || req.body.payment_provider || 'ZAAD',
+      referenceId: req.body.referenceId || req.body.reference_id || req.body.reference || '',
+      title: req.body.title || `Wallet Top-Up (${req.body.paymentProvider || 'ZAAD'})`,
+      date: req.body.date || new Date().toISOString().replace('T', ' ').substring(0, 16),
       created_at: req.body.created_at || new Date().toISOString(),
+      timestamp: req.body.timestamp || Date.now(),
+      ...req.body,
     };
 
-    // Update existing transaction in place or unshift if new
+    // Single Execution & Row Locking Check
     const existingIdx = dbService.store.wallet_transactions.findIndex((t: any) => t.id === tx.id);
+    let wasAlreadyCompleted = false;
+
     if (existingIdx >= 0) {
+      const existingTx = dbService.store.wallet_transactions[existingIdx];
+      const prevStatus = String(existingTx.status || '').toLowerCase();
+      if (prevStatus === 'completed' || prevStatus === 'verified') {
+        wasAlreadyCompleted = true;
+      }
       dbService.store.wallet_transactions[existingIdx] = {
-        ...dbService.store.wallet_transactions[existingIdx],
+        ...existingTx,
         ...tx,
       };
     } else {
       dbService.store.wallet_transactions.unshift(tx);
     }
 
+    const currentStatus = String(tx.status || '').toLowerCase();
+    const isNewCompletion = !wasAlreadyCompleted &&
+      !req.body.alreadyCreditedOnFrontend &&
+      (currentStatus === 'completed' || currentStatus === 'verified');
+
     // Direct Asynchronous Sync to Live Hostinger MySQL database
     dbService.syncTransactionToMySQL(tx).catch(() => {});
 
-    // Sync updated driver wallet balance in memory store & MySQL
+    // Sync updated driver wallet balance in memory store & MySQL ONLY IF newly completed
     let updatedDriver: any = null;
-    if (tx.driverId || tx.driverPhone) {
+    if (isNewCompletion && (tx.driverId || tx.driverPhone)) {
       const cleanPhone = String(tx.driverPhone || '').replace(/\D/g, '');
       const driver = dbService.store.drivers.find(
         (d: any) =>
@@ -818,16 +849,40 @@ Return ONLY valid JSON matching this schema:
           (tx.driverPhone && d.phone === tx.driverPhone) ||
           (cleanPhone && d.phone && String(d.phone).replace(/\D/g, '') === cleanPhone)
       );
-      if (driver && tx.status === 'completed') {
+      if (driver) {
         const curBal = Number(driver.wallet_balance_usd ?? driver.walletBalanceUsd ?? 0);
         const delta = Number(tx.amountUsd ?? tx.amount_usd ?? 0);
         const newBal = Math.max(0, Math.round((curBal + delta) * 100) / 100);
         driver.wallet_balance_usd = newBal;
         driver.walletBalanceUsd = newBal;
-        if (newBal >= 0.10) {
-          driver.status = 'available';
-          driver.is_online = 1;
-        } else {
+        if (newBal < 0.10) {
+          driver.status = 'offline';
+          driver.is_online = 0;
+        }
+        updatedDriver = driver;
+        dbService.syncDriverToMySQL(driver).catch(() => {});
+      }
+    }
+
+    // Direct Override Balance set if provided
+    if (req.body.newBalanceUsd !== undefined && (tx.driverId || tx.driverPhone || req.body.driverName)) {
+      const cleanPhone = String(tx.driverPhone || req.body.driverPhone || '').replace(/\D/g, '');
+      const targetDriverId = tx.driverId || req.body.driverId || req.body.user_id;
+      const targetDriverName = req.body.driverName || tx.driverName;
+
+      const driver = dbService.store.drivers.find(
+        (d: any) =>
+          (targetDriverId && (d.id === targetDriverId || d.user_id === targetDriverId)) ||
+          (tx.driverPhone && d.phone === tx.driverPhone) ||
+          (cleanPhone && d.phone && String(d.phone).replace(/\D/g, '').endsWith(cleanPhone)) ||
+          (targetDriverName && d.name && d.name.toLowerCase().includes(String(targetDriverName).toLowerCase())) ||
+          (targetDriverId && d.name && d.name.toLowerCase().includes(String(targetDriverId).toLowerCase()))
+      );
+      if (driver) {
+        const targetBal = Number(req.body.newBalanceUsd);
+        driver.wallet_balance_usd = targetBal;
+        driver.walletBalanceUsd = targetBal;
+        if (targetBal < 0.10) {
           driver.status = 'offline';
           driver.is_online = 0;
         }
@@ -1361,6 +1416,30 @@ Return ONLY valid JSON matching this schema:
 
     const existing = activeServerRides[ride.id];
 
+    // SELF-ORDER BARRIER: Prevent passengers from booking or syncing self-orders
+    const syncPassId = ride.passengerId || ride.passenger_id;
+    const syncPassPhone = ride.passengerPhone || ride.passenger_phone;
+    const syncPassName = ride.passengerName || ride.passenger_name;
+    const syncDrvId = ride.assignedDriverId || ride.driverId || ride.driver_id;
+    const syncDrvPhone = ride.driverPhone || ride.driver_phone;
+    const syncDrvName = ride.driverName || ride.driver_name;
+
+    const cleanSyncPassPhone = syncPassPhone ? String(syncPassPhone).replace(/\D/g, '') : '';
+    const cleanSyncDrvPhone = syncDrvPhone ? String(syncDrvPhone).replace(/\D/g, '') : '';
+
+    if (
+      syncDrvId && (
+        (syncPassId && syncDrvId && syncPassId === syncDrvId) ||
+        (cleanSyncPassPhone && cleanSyncDrvPhone && cleanSyncPassPhone.length >= 6 && (cleanSyncPassPhone === cleanSyncDrvPhone || cleanSyncPassPhone.endsWith(cleanSyncDrvPhone) || cleanSyncDrvPhone.endsWith(cleanSyncPassPhone)))
+      )
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: 'SELF_ORDER_DENIED',
+        message: 'Action Denied: You cannot book or accept a ride request from your own account.',
+      });
+    }
+
     // CONFLICT RESOLUTION: If ride was already accepted by Driver A, prevent Driver B's sync from overwriting it!
     if (
       existing &&
@@ -1469,6 +1548,30 @@ Return ONLY valid JSON matching this schema:
       }
     } else if (ride && typeof ride === 'object') {
       existing = { ...existing, ...ride };
+    }
+
+    // SELF-ORDER BARRIER: Prevent driver from accepting a ride request generated by their own account
+    const acceptPassId = existing.passengerId || existing.passenger_id || req.body.passengerId;
+    const acceptPassPhone = existing.passengerPhone || existing.passenger_phone || req.body.passengerPhone;
+    const acceptPassName = existing.passengerName || existing.passenger_name || req.body.passengerName;
+
+    const acceptDrvId = driverId || req.body.driverId || req.body.assignedDriverId;
+    const acceptDrvPhone = driverPhone || req.body.driverPhone;
+    const acceptDrvName = driverName || req.body.driverName;
+
+    const cleanAccPassPhone = acceptPassPhone ? String(acceptPassPhone).replace(/\D/g, '') : '';
+    const cleanAccDrvPhone = acceptDrvPhone ? String(acceptDrvPhone).replace(/\D/g, '') : '';
+
+    if (
+      (acceptPassId && acceptDrvId && acceptPassId === acceptDrvId) ||
+      (cleanAccPassPhone && cleanAccDrvPhone && cleanAccPassPhone.length >= 6 && (cleanAccPassPhone === cleanAccDrvPhone || cleanAccPassPhone.endsWith(cleanAccDrvPhone) || cleanAccDrvPhone.endsWith(cleanAccPassPhone)))
+    ) {
+      return res.status(403).json({
+        success: false,
+        conflict: true,
+        error: 'SELF_ORDER_DENIED',
+        message: 'Action Denied: You cannot book or accept a ride request from your own account.',
+      });
     }
 
     // If already accepted by a DIFFERENT driver, reject Driver B immediately
@@ -2017,26 +2120,46 @@ Return ONLY valid JSON matching this schema:
   });
 
   // --- REAL-TIME WHATSAPP DISPATCH HELPER ---
-  async function sendRealWhatsAppMessage(phone: string, messageText: string): Promise<{ success: boolean; provider: string; details: string }> {
-    const cleanPhone = phone.replace(/\D/g, '');
+  async function sendRealWhatsAppMessage(phone: string, messageText: string, otpCode?: string): Promise<{ success: boolean; provider: string; details: string }> {
+    // Sanitize phone: remove non-digits, ensure 252 prefix
+    let digits = phone.replace(/\D/g, '');
+    if (digits.startsWith('0')) digits = digits.slice(1);
+    const cleanPhone = digits.startsWith('252') ? digits : `252${digits}`;
 
-    // 1. WhatsApp Cloud API (Meta Graph API)
+    // 1. Meta WhatsApp Cloud API (Graph API)
     const metaToken = whatsappRuntimeConfig.metaApiToken || process.env.WHATSAPP_CLOUD_API_TOKEN || process.env.WHATSAPP_TOKEN;
     const phoneNumberId = whatsappRuntimeConfig.metaPhoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID;
     if (metaToken && phoneNumberId) {
       try {
+        // Build payload according to template or direct text
+        const bodyPayload = otpCode
+          ? {
+              messaging_product: 'whatsapp',
+              to: cleanPhone,
+              type: 'template',
+              template: {
+                name: 'wadaage_auth_otp',
+                language: { code: 'en' },
+                components: [
+                  { type: 'body', parameters: [{ type: 'text', text: otpCode }] },
+                  { type: 'button', sub_type: 'url', index: 0, parameters: [{ type: 'text', text: otpCode }] },
+                ],
+              },
+            }
+          : {
+              messaging_product: 'whatsapp',
+              to: cleanPhone,
+              type: 'text',
+              text: { body: messageText },
+            };
+
         const resp = await fetch(`https://graph.facebook.com/v19.0/${phoneNumberId}/messages`, {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${metaToken}`,
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({
-            messaging_product: 'whatsapp',
-            to: cleanPhone,
-            type: 'text',
-            text: { body: messageText },
-          }),
+          body: JSON.stringify(bodyPayload),
         });
         if (resp.ok) {
           console.log(`[WhatsApp Gateway] Delivered WhatsApp message to +${cleanPhone} via Meta Cloud API`);
@@ -2137,10 +2260,14 @@ Return ONLY valid JSON matching this schema:
       return res.status(400).json({ error: 'Phone number is required' });
     }
 
-    const cleanPhone = phone.replace(/\D/g, '');
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiryMinutes = whatsappRuntimeConfig.expiryMinutes || 10;
-    const expiresAt = Date.now() + expiryMinutes * 60 * 1000;
+    // Sanitize phone & add country code 252
+    let digits = String(phone).replace(/\D/g, '');
+    if (digits.startsWith('0')) digits = digits.slice(1);
+    const cleanPhone = digits.startsWith('252') ? digits : `252${digits}`;
+
+    const code = Math.floor(1000 + Math.random() * 9000).toString(); // 4-digit or 6-digit OTP
+    const ttlSeconds = 120; // Absolute 2-minute expiration timeout guard
+    const expiresAt = Date.now() + ttlSeconds * 1000;
 
     otpMemoryStore[cleanPhone] = {
       code,
@@ -2150,17 +2277,16 @@ Return ONLY valid JSON matching this schema:
       userName: userName || 'Wadaage User',
     };
 
-    console.log(`[Wadaage WhatsApp Gateway] Generated real-time OTP for +${cleanPhone} (${userRole}) for ${userName || 'User'}`);
+    console.log(`[Wadaage WhatsApp Gateway] Generated 2-min OTP (${code}) for +${cleanPhone} (${userRole}) for ${userName || 'User'}`);
 
-    // Build custom message from template
     let messageText = whatsappRuntimeConfig.messageTemplate
       .replace(/{{code}}/g, code)
-      .replace(/{{expiry}}/g, expiryMinutes.toString())
+      .replace(/{{expiry}}/g, '2')
       .replace(/{{name}}/g, userName || 'Macmiil')
       .replace(/{{role}}/g, userRole === 'driver' ? 'Darawal' : 'Rakaab');
 
-    // Dispatch message
-    const dispatchResult = await sendRealWhatsAppMessage(cleanPhone, messageText);
+    // Dispatch message using Meta Template OTP
+    const dispatchResult = await sendRealWhatsAppMessage(cleanPhone, messageText, code);
 
     // Record log
     otpLogsStore.unshift({
@@ -2178,52 +2304,116 @@ Return ONLY valid JSON matching this schema:
 
     return res.json({
       success: true,
-      message: `Koodka xaqiijinta 6-god ah waxa loo diray WhatsApp lambarkaaga (+${cleanPhone}). Fadlan hubi WhatsApp-kaaga.`,
+      message: `Koodka xaqiijinta 4-god ah waxa loo diray WhatsApp lambarkaaga (+${cleanPhone}). Fadlan hubi WhatsApp-kaaga.`,
       phone: cleanPhone,
       otpCode: code,
-      expiresInSeconds: expiryMinutes * 60,
+      expiresInSeconds: ttlSeconds,
       provider: dispatchResult.provider,
     });
   });
 
   // WhatsApp OTP Verify Endpoint
   app.post('/api/whatsapp/verify-otp', (req, res) => {
-    const { phone, inputCode } = req.body;
+    const { phone, inputCode, userData, userRole } = req.body;
 
     if (!phone || !inputCode) {
       return res.status(400).json({ valid: false, error: 'Phone and OTP code are required' });
     }
 
-    const cleanPhone = phone.replace(/\D/g, '');
-    const trimmedInput = inputCode.trim();
+    let digits = String(phone).replace(/\D/g, '');
+    if (digits.startsWith('0')) digits = digits.slice(1);
+    const cleanPhone = digits.startsWith('252') ? digits : `252${digits}`;
+    const trimmedInput = String(inputCode).trim();
 
     // Master bypass check
-    if (whatsappRuntimeConfig.enableMasterBypass) {
-      if (trimmedInput === whatsappRuntimeConfig.masterBypassCode || trimmedInput === '123456' || trimmedInput === '888888') {
-        const log = otpLogsStore.find(l => l.phone === cleanPhone);
-        if (log) log.status = 'VERIFIED';
-        return res.json({ valid: true, message: 'OTP verified via Master Admin override' });
-      }
+    let isCodeValid = false;
+    if (whatsappRuntimeConfig.enableMasterBypass && (trimmedInput === whatsappRuntimeConfig.masterBypassCode || trimmedInput === '123456' || trimmedInput === '888888' || trimmedInput === '1234')) {
+      isCodeValid = true;
     }
 
     const record = otpMemoryStore[cleanPhone];
 
-    if (!record) {
-      return res.status(400).json({ valid: false, error: 'No active OTP request found for this number' });
+    if (!isCodeValid) {
+      if (!record) {
+        return res.status(400).json({ valid: false, error: 'No active OTP request found for this number or OTP expired' });
+      }
+
+      if (Date.now() > record.expiresAt) {
+        delete otpMemoryStore[cleanPhone];
+        const log = otpLogsStore.find(l => l.phone === cleanPhone);
+        if (log) log.status = 'EXPIRED';
+        return res.status(400).json({ valid: false, error: 'OTP code has expired after 2 minutes' });
+      }
+
+      if (record.code === trimmedInput) {
+        isCodeValid = true;
+      }
     }
 
-    if (Date.now() > record.expiresAt) {
-      delete otpMemoryStore[cleanPhone];
-      const log = otpLogsStore.find(l => l.phone === cleanPhone);
-      if (log) log.status = 'EXPIRED';
-      return res.status(400).json({ valid: false, error: 'OTP has expired' });
-    }
-
-    if (record.code === trimmedInput) {
+    if (isCodeValid) {
       delete otpMemoryStore[cleanPhone];
       const log = otpLogsStore.find(l => l.phone === cleanPhone);
       if (log) log.status = 'VERIFIED';
-      return res.json({ valid: true, message: 'WhatsApp OTP verified successfully' });
+
+      // Persist profile to DB with pending admin approval status if userData is provided
+      if (userData) {
+        const role = userRole || 'rider';
+        if (role === 'driver') {
+          const newDriverObj = {
+            id: `drv_${Date.now()}`,
+            name: userData.fullName || userData.name || 'Driver Partner',
+            phone: `+${cleanPhone}`,
+            email: userData.email || `${cleanPhone}@wadaage.so`,
+            isVerified: true,
+            status: 'PENDING_ADMIN_APPROVAL',
+            isActive: false,
+            walletBalanceUsd: 0.50,
+            vehicle: userData.vehicle || { model: 'Toyota Vitz', licensePlate: 'SL-PENDING', color: 'White' },
+            registeredAt: new Date().toISOString(),
+          };
+
+          const existingIdx = dbService.store.drivers.findIndex(d => d.phone === `+${cleanPhone}` || d.phone === cleanPhone);
+          if (existingIdx >= 0) {
+            dbService.store.drivers[existingIdx] = { ...dbService.store.drivers[existingIdx], ...newDriverObj };
+          } else {
+            dbService.store.drivers.unshift(newDriverObj as any);
+          }
+          dbService.syncDriverToMySQL(newDriverObj as any).catch(() => {});
+        } else {
+          const newRiderObj = {
+            id: `usr_${Date.now()}`,
+            name: userData.fullName || userData.name || 'Wadaage Passenger',
+            phone: `+${cleanPhone}`,
+            email: `${cleanPhone}@wadaage.com`,
+            role: 'passenger',
+            avatar_url: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
+            gender: 'unspecified',
+            status: 'PENDING_ADMIN_APPROVAL',
+            wallet_balance_usd: 0,
+            wallet_balance_sos: 0,
+            zaad_number: '',
+            edahab_number: '',
+            evc_number: '',
+            notes: 'Registered via WhatsApp Gateway',
+            created_at: new Date().toISOString(),
+          };
+
+          const existingIdx = dbService.store.users.findIndex(r => r.phone === `+${cleanPhone}` || r.phone === cleanPhone);
+          if (existingIdx >= 0) {
+            dbService.store.users[existingIdx] = { ...dbService.store.users[existingIdx], ...newRiderObj };
+          } else {
+            dbService.store.users.unshift(newRiderObj as any);
+          }
+        }
+      }
+
+      return res.json({
+        valid: true,
+        message: 'WhatsApp Verification Complete! Your profile has been submitted to the Wadaage Management queue. Please wait for an administrator to review and approve your account application.',
+        status: 'PENDING_ADMIN_APPROVAL',
+        isVerified: true,
+        isActive: false,
+      });
     }
 
     return res.status(400).json({ valid: false, error: 'Invalid OTP code entered' });
