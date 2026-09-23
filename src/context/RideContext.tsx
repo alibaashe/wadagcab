@@ -2691,54 +2691,54 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Admin verifies and controls real amount received for driver top-up (strictly isolates to the targeted driver only)
   const verifyAndApproveDriverTopUp = (txId: string, realAmountSosInput?: number, adminNote?: string) => {
+    const targetTx = driverWalletTransactions.find((t) => t.id === txId);
+    if (!targetTx) return;
+
+    const curStatus = String(targetTx.status || '').toLowerCase();
+    if (curStatus === 'completed' || curStatus === 'verified') return;
+
+    const finalSos = realAmountSosInput && realAmountSosInput > 0 ? realAmountSosInput : targetTx.amountSos;
+    const finalUsd = Math.round((finalSos / 10000) * 100) / 100;
+    const targetDriverId = targetTx.driverId || 'drv_01';
+
+    // 1. Apply balance update across all key aliases
+    const calculatedNewBalUsd = applyDriverBalanceUpdate(targetDriverId, targetTx.driverPhone, finalUsd, false);
+
+    const approvedTx: DriverWalletTransaction = {
+      ...targetTx,
+      amountSos: finalSos,
+      amountUsd: finalUsd,
+      status: 'completed',
+      verifiedAt: new Date().toISOString().replace('T', ' ').substring(0, 16),
+      verificationMethod: 'admin_confirmation',
+      adminNote: adminNote || `Verified by Admin. Real amount credited: ${finalSos.toLocaleString()} SLSH ($${finalUsd.toFixed(2)} USD) to driver ${targetTx.driverName || targetDriverId}.`,
+    };
+
+    saveTransactionToFirestore(approvedTx);
+
+    // 2. Pure state update
     setDriverWalletTransactions((prev) =>
-      prev.map((tx) => {
-        if (tx.id === txId) {
-          // Atomic Lock Guard: Prevent double-execution if transaction is already completed or verified
-          const curStatus = String(tx.status || '').toLowerCase();
-          if (curStatus === 'completed' || curStatus === 'verified') {
-            return tx;
-          }
-
-          const finalSos = realAmountSosInput && realAmountSosInput > 0 ? realAmountSosInput : tx.amountSos;
-          const finalUsd = Math.round((finalSos / 10000) * 100) / 100;
-          const targetDriverId = tx.driverId || 'drv_01';
-
-          // Apply balance update across all key aliases
-          const calculatedNewBalUsd = applyDriverBalanceUpdate(targetDriverId, tx.driverPhone, finalUsd, false);
-
-          const approvedTx: DriverWalletTransaction = {
-            ...tx,
-            amountSos: finalSos,
-            amountUsd: finalUsd,
-            status: 'completed',
-            verifiedAt: new Date().toISOString().replace('T', ' ').substring(0, 16),
-            verificationMethod: 'admin_confirmation',
-            adminNote: adminNote || `Verified by Admin. Real amount credited: ${finalSos.toLocaleString()} SLSH ($${finalUsd.toFixed(2)} USD) to driver ${tx.driverName || targetDriverId}.`,
-          };
-          saveTransactionToFirestore(approvedTx);
-          fetch(getApiUrl('/api/db/wallet-transactions'), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              ...approvedTx,
-              alreadyCreditedOnFrontend: true,
-              newBalanceUsd: calculatedNewBalUsd,
-            }),
-          }).catch(() => {});
-          broadcastRideEvent('DRIVER_WALLET_UPDATED', {
-            driverId: targetDriverId,
-            driverPhone: tx.driverPhone,
-            amountUsd: finalUsd,
-            amountSos: finalSos,
-            newBalanceUsd: calculatedNewBalUsd,
-            tx: approvedTx,
-          });
-          return approvedTx;
-        }
-        return tx;
-      })
+      prev.map((tx) => (tx.id === txId ? approvedTx : tx))
     );
+
+    fetch(getApiUrl('/api/db/wallet-transactions'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...approvedTx,
+        alreadyCreditedOnFrontend: true,
+        newBalanceUsd: calculatedNewBalUsd,
+      }),
+    }).catch(() => {});
+
+    broadcastRideEvent('DRIVER_WALLET_UPDATED', {
+      driverId: targetDriverId,
+      driverPhone: targetTx.driverPhone,
+      amountUsd: finalUsd,
+      amountSos: finalSos,
+      newBalanceUsd: calculatedNewBalUsd,
+      tx: approvedTx,
+    });
   };
 
   const rejectDriverPendingTransaction = (txId: string, adminNote?: string) => {

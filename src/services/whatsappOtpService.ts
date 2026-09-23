@@ -114,14 +114,6 @@ export async function verifyWhatsAppOtp(phone: string, inputCode: string, userDa
   const normalizedPhone = formatSomalilandPhone(phone);
   const trimmedCode = inputCode.trim();
 
-  // Master bypass code for emergency administration
-  if (trimmedCode === '123456' || trimmedCode === '888888' || trimmedCode === '1234') {
-    return {
-      success: true,
-      message: '✅ Lambarkaaga WhatsApp waxaa si sax ah u xaqiijiyay Wadaage App!',
-    };
-  }
-
   // Attempt server verification first
   try {
     const res = await fetch(getApiUrl('/api/whatsapp/verify-otp'), {

@@ -33,6 +33,7 @@ export const WadaageAdminWalletControl: React.FC = () => {
     adminDirectCreditDriverWallet,
     adminCreditUserWallet,
     drivers,
+    driverWallets,
     getDriverWalletBalance,
     getUserWalletBalance,
   } = useRide();
@@ -194,10 +195,15 @@ export const WadaageAdminWalletControl: React.FC = () => {
           <span className="text-2xl font-black text-rose-600 dark:text-rose-400">{rejectedTxs.length}</span>
         </div>
 
-        <div className="p-3 bg-slate-50 dark:bg-slate-800/60 rounded-2xl border border-slate-200 dark:border-slate-700">
-          <span className="text-slate-500 block text-[10px] font-bold uppercase">Total Verified Credited</span>
-          <span className="text-2xl font-black text-slate-900 dark:text-white font-mono">
-            {completedTxs.reduce((sum, t) => sum + t.amountSos, 0).toLocaleString()} SLSH
+        <div className="p-3 bg-[#002418] rounded-2xl border border-[#00E575]/30">
+          <span className="text-emerald-400 block text-[10px] font-extrabold uppercase tracking-wider">Total Live System Float</span>
+          <span className="text-2xl font-black text-white font-mono">
+            {Math.round(
+              drivers.reduce((sum, drv) => {
+                const balUsd = getDriverWalletBalance(drv.id) || (drv.phone ? getDriverWalletBalance(drv.phone) : 0);
+                return sum + balUsd;
+              }, 0) * 10000
+            ).toLocaleString()} SLSH
           </span>
         </div>
       </div>
