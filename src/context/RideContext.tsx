@@ -1573,12 +1573,12 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (driverWallets[key] !== undefined) {
         const val = Number(driverWallets[key]);
         if (!isNaN(val)) {
-          if (mapBal === null || val < mapBal) mapBal = val;
+          if (mapBal === null || val > mapBal) mapBal = val;
         }
       }
     }
 
-    if (matchedDrv) {
+    if (mapBal === null && matchedDrv) {
       const drvBalUsd = matchedDrv.walletBalanceUsd !== undefined
         ? Number(matchedDrv.walletBalanceUsd)
         : (matchedDrv as any).wallet_balance_usd !== undefined
@@ -1586,11 +1586,11 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
         : undefined;
 
       if (drvBalUsd !== undefined && !isNaN(drvBalUsd)) {
-        if (mapBal === null || drvBalUsd < mapBal) mapBal = drvBalUsd;
+        mapBal = drvBalUsd;
       }
     }
 
-    if (currentUser && currentUser.role === 'driver') {
+    if (mapBal === null && currentUser && currentUser.role === 'driver') {
       const userBalUsd = currentUser.walletBalanceUsd !== undefined
         ? Number(currentUser.walletBalanceUsd)
         : (currentUser as any).wallet_balance_usd !== undefined
@@ -1598,7 +1598,7 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
         : undefined;
 
       if (userBalUsd !== undefined && !isNaN(userBalUsd)) {
-        if (mapBal === null || userBalUsd < mapBal) mapBal = userBalUsd;
+        mapBal = userBalUsd;
       }
     }
 

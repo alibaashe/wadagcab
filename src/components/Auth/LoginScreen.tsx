@@ -29,7 +29,7 @@ import React, { useState } from 'react';
 import { useRide } from '../../context/RideContext';
 import { AuthUser, UserRole, VehicleCategory, DriverApplication } from '../../types';
 import { DriverRegistrationModal } from '../Driver/DriverRegistrationModal';
-import { displayFormattedPhone } from '../../services/whatsappOtpService';
+import { sendWhatsAppOtp, verifyWhatsAppOtp, displayFormattedPhone } from '../../services/whatsappOtpService';
 import { WadaageLogo } from '../Common/WadaageLogo';
 import { SomalilandFlag } from '../Common/SomalilandFlag';
 import { INITIAL_REGISTERED_USERS, INITIAL_DRIVERS, INITIAL_DRIVER_APPLICATIONS } from '../../data/mockData';
@@ -70,6 +70,95 @@ export const LoginScreen: React.FC = () => {
   // Loading and feedback states
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+
+  // WhatsApp OTP Verification Step States
+  const [showOtpStep, setShowOtpStep] = useState(false);
+  const [otpInput, setOtpInput] = useState('');
+  const [otpTimer, setOtpTimer] = useState(120); // 2-minute countdown clock
+  const [pendingRegistrationData, setPendingRegistrationData] = useState<any>(null);
+
+  // 2-minute countdown ticker clock effect
+  React.useEffect(() => {
+    let interval: any = null;
+    if (showOtpStep && otpTimer > 0) {
+      interval = setInterval(() => setOtpTimer((prev) => prev - 1), 1000);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [showOtpStep, otpTimer]);
+
+  // Handle OTP Verification Submit
+  const handleVerifyOtpSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setFormError(null);
+
+    if (!otpInput.trim() || otpInput.trim().length < 4) {
+      setFormError(language === 'so' ? 'Fadlan geli koodka xaqiijinta (OTP)' : 'Please enter the verification OTP code');
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      const res = await verifyWhatsAppOtp(
+        pendingRegistrationData?.cleanPhone || phoneNumber,
+        otpInput.trim(),
+        pendingRegistrationData,
+        pendingRegistrationData?.role || selectedRole
+      );
+
+      setIsSubmitting(false);
+
+      if (res.success) {
+        setShowOtpStep(false);
+
+        if (pendingRegistrationData?.role === 'driver') {
+          registerDriver({
+            name: pendingRegistrationData.fullName,
+            phone: pendingRegistrationData.phone,
+            password: pendingRegistrationData.password,
+            vehicleCategory: pendingRegistrationData.vehicleCategory,
+            vehicleModel: pendingRegistrationData.vehicleModel,
+            licensePlate: pendingRegistrationData.licensePlate,
+            vehicleColor: pendingRegistrationData.vehicleColor,
+            autoApprove: false,
+          });
+
+          setSuccessModalData({
+            title: language === 'so' ? 'Xaqiijinta WhatsApp-ka Waa Guul' : 'WhatsApp Verification Complete!',
+            message:
+              language === 'so'
+                ? 'Xaqiijinta WhatsApp-ka waa dhacday! Akoonkaaga waxaa loo gudbiyay safka maamulka Wadaage. Fadlan sug inta maamuluhu dib-u-eegayo oo ka ansixinayo.'
+                : 'WhatsApp Verification Complete! Your profile has been submitted to the Wadaage Management queue. Please wait for an administrator to review and approve your account application.',
+            status: 'pending',
+            phone: pendingRegistrationData?.phone || getFullPhone(),
+          });
+        } else {
+          const newRider = registerRider({
+            name: pendingRegistrationData?.fullName || fullName,
+            phone: pendingRegistrationData?.phone || getFullPhone(),
+          });
+
+          setSuccessModalData({
+            title: language === 'so' ? 'Xaqiijinta WhatsApp-ka Waa Guul' : 'WhatsApp Verification Complete!',
+            message:
+              language === 'so'
+                ? 'Xaqiijinta WhatsApp-ka waa dhacday! Akoonkaaga waxaa loo gudbiyay safka maamulka Wadaage. Fadlan sug inta maamuluhu ka ansixinayo.'
+                : 'WhatsApp Verification Complete! Your profile has been submitted to the Wadaage Management queue. Please wait for an administrator to review and approve your account application.',
+            status: 'pending',
+            phone: pendingRegistrationData?.phone || getFullPhone(),
+          });
+        }
+      } else {
+        setFormError(res.message || (language === 'so' ? 'Koodka OTP ma saxna' : 'Invalid OTP code'));
+      }
+    } catch (_e) {
+      setIsSubmitting(false);
+      setFormError('Network error during OTP verification. Please try again.');
+    }
+  };
+
   const [successModalData, setSuccessModalData] = useState<{
     title: string;
     message: string;
@@ -209,21 +298,32 @@ export const LoginScreen: React.FC = () => {
       if (selectedRole === 'passenger') {
         // ==================== RIDER FLOW ====================
         if (isRegisterMode) {
-          // --- Register New Rider ---
+          // --- Register New Rider via WhatsApp OTP ---
           if (!fullName.trim()) {
             setIsSubmitting(false);
             setFormError(language === 'so' ? 'Fadlan qor magacaaga buuxa' : 'Please enter your full name');
             return;
           }
 
-          const newRider = registerRider({
-            name: fullName.trim(),
+          setPendingRegistrationData({
+            role: 'passenger',
+            fullName: fullName.trim(),
             phone: formattedPhone,
+            cleanPhone,
           });
 
+          // Dispatch WhatsApp OTP
+          const sendRes = await sendWhatsAppOtp(cleanPhone, 'rider', fullName.trim());
           setIsSubmitting(false);
-          // Instant direct entry for registered rider
-          login(newRider);
+
+          if (sendRes.success) {
+            setShowOtpStep(true);
+            setOtpTimer(120);
+            setOtpInput('');
+          } else {
+            setFormError(sendRes.message || 'WhatsApp OTP delivery failed. Please try again.');
+          }
+          return;
         } else {
           // --- Sign In Existing Rider ---
           const existing = findRegisteredRider(cleanFullPhone) || findRegisteredRider(cleanPhone);
@@ -252,14 +352,12 @@ export const LoginScreen: React.FC = () => {
       } else if (selectedRole === 'driver') {
         // ==================== DRIVER FLOW ====================
         if (isRegisterMode) {
-          // --- Register New Driver ---
+          // --- Register New Driver via WhatsApp OTP ---
           if (!fullName.trim()) {
             setIsSubmitting(false);
             setFormError(language === 'so' ? 'Fadlan qor magaca darawalka' : 'Please enter driver full name');
             return;
           }
-
-          const effectiveCategory: VehicleCategory = driverServiceChoice;
 
           if (!password || password.trim().length < 4) {
             setIsSubmitting(false);
@@ -267,29 +365,32 @@ export const LoginScreen: React.FC = () => {
             return;
           }
 
-          const result = registerDriver({
-            name: fullName.trim(),
+          const effectiveCategory: VehicleCategory = driverServiceChoice;
+
+          setPendingRegistrationData({
+            role: 'driver',
+            fullName: fullName.trim(),
             phone: formattedPhone,
+            cleanPhone,
             password: password.trim(),
             vehicleCategory: effectiveCategory,
             vehicleModel: vehicleModel.trim() || 'Toyota Vitz',
             licensePlate: licensePlate.trim() || `SL-${Math.floor(10000 + Math.random() * 90000)}`,
             vehicleColor: vehicleColor.trim() || 'White',
-            autoApprove: false, // Sent to Admin Panel for review
           });
 
+          // Dispatch WhatsApp OTP
+          const sendRes = await sendWhatsAppOtp(cleanPhone, 'driver', fullName.trim());
           setIsSubmitting(false);
 
-          // Show confirmation modal for pending admin review
-          setSuccessModalData({
-            title: language === 'so' ? 'Diiwaangelintu Way Guulaysatay!' : 'Driver Registration Submitted!',
-            message:
-              language === 'so'
-                ? `Xogtaada darawalnimo (${driverServiceChoice === 'wadaage_both' ? 'Labada Adeeg: Normal Taxi & Wadaage Share' : driverServiceChoice === 'wadaage_taxi' ? 'Normal Taxi' : 'Wadaage Share'}) si guul leh ayaa loo gudbiyay. Maamulka Wadaage ayaa dib-u-eegi doona si ay u ansixiyaan.`
-                : `Your driver registration (${driverServiceChoice === 'wadaage_both' ? 'Both: Normal Taxi & Wadaage Share' : driverServiceChoice === 'wadaage_taxi' ? 'Normal Taxi' : 'Wadaage Share'}) has been submitted for Admin review. Once approved, you will be able to start accepting rides.`,
-            status: 'pending',
-            phone: formattedPhone,
-          });
+          if (sendRes.success) {
+            setShowOtpStep(true);
+            setOtpTimer(120);
+            setOtpInput('');
+          } else {
+            setFormError(sendRes.message || 'WhatsApp OTP delivery failed. Please try again.');
+          }
+          return;
         } else {
           // --- Sign In Existing Driver ---
           if (!password) {
@@ -524,6 +625,99 @@ export const LoginScreen: React.FC = () => {
           </div>
         )}
 
+        {showOtpStep ? (
+          /* ================= WHATSAPP OTP VERIFICATION SCREEN ================= */
+          <div className="space-y-4 bg-[#002418] p-5 rounded-3xl border-2 border-[#00E575]/40 shadow-2xl animate-in fade-in">
+            <div className="text-center space-y-2">
+              <div className="w-12 h-12 rounded-2xl bg-[#00E575]/20 border border-[#00E575]/40 text-[#00E575] flex items-center justify-center mx-auto shadow-[0_0_15px_rgba(0,229,117,0.3)]">
+                <KeyRound className="w-6 h-6" />
+              </div>
+              <h3 className="text-lg font-black text-white">Xaqiijinta WhatsApp-ka (WhatsApp OTP)</h3>
+              <p className="text-xs text-emerald-200">
+                Koodka xaqiijinta 4-god ah waxaa loo diray WhatsApp lambarkaaga{' '}
+                <span className="font-mono font-bold text-[#00E575]">
+                  {pendingRegistrationData?.phone || getFullPhone()}
+                </span>
+              </p>
+            </div>
+
+            <form onSubmit={handleVerifyOtpSubmit} className="space-y-4">
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-[11px] font-extrabold text-emerald-300 uppercase tracking-wider">
+                    GELI KOODKA OTP (4-DIGIT CODE)
+                  </label>
+                  <div className="flex items-center space-x-1 text-xs font-mono font-bold text-amber-400">
+                    <Clock className="w-3.5 h-3.5" />
+                    <span>
+                      {Math.floor(otpTimer / 60)}:{(otpTimer % 60).toString().padStart(2, '0')}
+                    </span>
+                  </div>
+                </div>
+
+                <input
+                  type="text"
+                  maxLength={6}
+                  value={otpInput}
+                  onChange={(e) => setOtpInput(e.target.value.replace(/\D/g, ''))}
+                  placeholder="••••"
+                  className="w-full bg-black/60 border-2 border-[#00E575]/50 rounded-2xl px-4 py-3 text-center text-2xl font-mono font-black tracking-[0.5em] text-[#00E575] focus:outline-none focus:border-[#00E575] focus:ring-2 focus:ring-[#00E575]/30 shadow-inner"
+                  autoFocus
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={isSubmitting || !otpInput.trim()}
+                className="w-full bg-[#00E575] hover:bg-[#00c966] active:scale-[0.98] text-slate-950 font-black py-3.5 rounded-2xl text-xs uppercase tracking-wider shadow-[0_0_20px_rgba(0,229,117,0.4)] transition-all flex items-center justify-center space-x-2 cursor-pointer disabled:opacity-50"
+              >
+                {isSubmitting ? (
+                  <div className="w-5 h-5 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <>
+                    <CheckCircle className="w-4 h-4" />
+                    <span>✓ XAQUIIJI KOODKA (VERIFY & SUBMIT)</span>
+                  </>
+                )}
+              </button>
+
+              <div className="flex items-center justify-between pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowOtpStep(false);
+                    setOtpInput('');
+                  }}
+                  aria-label="Bedel Lambarka (Change Number)"
+                  className="text-xs font-bold text-white/60 hover:text-white transition flex items-center space-x-1"
+                >
+                  <ArrowLeft className="w-3.5 h-3.5" />
+                  <span>Bedel Lambarka</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={otpTimer > 0 || isSubmitting}
+                  onClick={async () => {
+                    setIsSubmitting(true);
+                    const cleanP = pendingRegistrationData?.cleanPhone || getCleanPhoneDigits();
+                    const res = await sendWhatsAppOtp(cleanP, pendingRegistrationData?.role || 'rider', pendingRegistrationData?.fullName);
+                    setIsSubmitting(false);
+                    if (res.success) {
+                      setOtpTimer(120);
+                      setFormError(null);
+                    } else {
+                      setFormError(res.message || 'Resend failed');
+                    }
+                  }}
+                  className="text-xs font-bold text-[#00E575] hover:underline disabled:opacity-40 transition"
+                >
+                  {otpTimer > 0 ? `Dib u dir (${otpTimer}s)` : '🔄 Dib u dir Koodka (Resend OTP)'}
+                </button>
+              </div>
+            </form>
+          </div>
+        ) : (
         <form onSubmit={handleAuthSubmit} className="space-y-3">
 
           {/* ================= ADMIN AUTHENTICATION ================= */}
@@ -829,6 +1023,7 @@ export const LoginScreen: React.FC = () => {
             )}
           </div>
         </form>
+        )}
       </div>
 
       {/* 4. FOOTER & SUPPORT GATEWAY */}

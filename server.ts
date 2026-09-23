@@ -855,10 +855,7 @@ Return ONLY valid JSON matching this schema:
         const newBal = Math.max(0, Math.round((curBal + delta) * 100) / 100);
         driver.wallet_balance_usd = newBal;
         driver.walletBalanceUsd = newBal;
-        if (newBal >= 0.10) {
-          driver.status = 'available';
-          driver.is_online = 1;
-        } else {
+        if (newBal < 0.10) {
           driver.status = 'offline';
           driver.is_online = 0;
         }
@@ -885,10 +882,7 @@ Return ONLY valid JSON matching this schema:
         const targetBal = Number(req.body.newBalanceUsd);
         driver.wallet_balance_usd = targetBal;
         driver.walletBalanceUsd = targetBal;
-        if (targetBal >= 0.10) {
-          driver.status = 'available';
-          driver.is_online = 1;
-        } else {
+        if (targetBal < 0.10) {
           driver.status = 'offline';
           driver.is_online = 0;
         }
@@ -2126,26 +2120,46 @@ Return ONLY valid JSON matching this schema:
   });
 
   // --- REAL-TIME WHATSAPP DISPATCH HELPER ---
-  async function sendRealWhatsAppMessage(phone: string, messageText: string): Promise<{ success: boolean; provider: string; details: string }> {
-    const cleanPhone = phone.replace(/\D/g, '');
+  async function sendRealWhatsAppMessage(phone: string, messageText: string, otpCode?: string): Promise<{ success: boolean; provider: string; details: string }> {
+    // Sanitize phone: remove non-digits, ensure 252 prefix
+    let digits = phone.replace(/\D/g, '');
+    if (digits.startsWith('0')) digits = digits.slice(1);
+    const cleanPhone = digits.startsWith('252') ? digits : `252${digits}`;
 
-    // 1. WhatsApp Cloud API (Meta Graph API)
+    // 1. Meta WhatsApp Cloud API (Graph API)
     const metaToken = whatsappRuntimeConfig.metaApiToken || process.env.WHATSAPP_CLOUD_API_TOKEN || process.env.WHATSAPP_TOKEN;
     const phoneNumberId = whatsappRuntimeConfig.metaPhoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID;
     if (metaToken && phoneNumberId) {
       try {
+        // Build payload according to template or direct text
+        const bodyPayload = otpCode
+          ? {
+              messaging_product: 'whatsapp',
+              to: cleanPhone,
+              type: 'template',
+              template: {
+                name: 'wadaage_auth_otp',
+                language: { code: 'en' },
+                components: [
+                  { type: 'body', parameters: [{ type: 'text', text: otpCode }] },
+                  { type: 'button', sub_type: 'url', index: 0, parameters: [{ type: 'text', text: otpCode }] },
+                ],
+              },
+            }
+          : {
+              messaging_product: 'whatsapp',
+              to: cleanPhone,
+              type: 'text',
+              text: { body: messageText },
+            };
+
         const resp = await fetch(`https://graph.facebook.com/v19.0/${phoneNumberId}/messages`, {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${metaToken}`,
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({
-            messaging_product: 'whatsapp',
-            to: cleanPhone,
-            type: 'text',
-            text: { body: messageText },
-          }),
+          body: JSON.stringify(bodyPayload),
         });
         if (resp.ok) {
           console.log(`[WhatsApp Gateway] Delivered WhatsApp message to +${cleanPhone} via Meta Cloud API`);
@@ -2246,10 +2260,14 @@ Return ONLY valid JSON matching this schema:
       return res.status(400).json({ error: 'Phone number is required' });
     }
 
-    const cleanPhone = phone.replace(/\D/g, '');
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiryMinutes = whatsappRuntimeConfig.expiryMinutes || 10;
-    const expiresAt = Date.now() + expiryMinutes * 60 * 1000;
+    // Sanitize phone & add country code 252
+    let digits = String(phone).replace(/\D/g, '');
+    if (digits.startsWith('0')) digits = digits.slice(1);
+    const cleanPhone = digits.startsWith('252') ? digits : `252${digits}`;
+
+    const code = Math.floor(1000 + Math.random() * 9000).toString(); // 4-digit or 6-digit OTP
+    const ttlSeconds = 120; // Absolute 2-minute expiration timeout guard
+    const expiresAt = Date.now() + ttlSeconds * 1000;
 
     otpMemoryStore[cleanPhone] = {
       code,
@@ -2259,17 +2277,16 @@ Return ONLY valid JSON matching this schema:
       userName: userName || 'Wadaage User',
     };
 
-    console.log(`[Wadaage WhatsApp Gateway] Generated real-time OTP for +${cleanPhone} (${userRole}) for ${userName || 'User'}`);
+    console.log(`[Wadaage WhatsApp Gateway] Generated 2-min OTP (${code}) for +${cleanPhone} (${userRole}) for ${userName || 'User'}`);
 
-    // Build custom message from template
     let messageText = whatsappRuntimeConfig.messageTemplate
       .replace(/{{code}}/g, code)
-      .replace(/{{expiry}}/g, expiryMinutes.toString())
+      .replace(/{{expiry}}/g, '2')
       .replace(/{{name}}/g, userName || 'Macmiil')
       .replace(/{{role}}/g, userRole === 'driver' ? 'Darawal' : 'Rakaab');
 
-    // Dispatch message
-    const dispatchResult = await sendRealWhatsAppMessage(cleanPhone, messageText);
+    // Dispatch message using Meta Template OTP
+    const dispatchResult = await sendRealWhatsAppMessage(cleanPhone, messageText, code);
 
     // Record log
     otpLogsStore.unshift({
@@ -2287,52 +2304,116 @@ Return ONLY valid JSON matching this schema:
 
     return res.json({
       success: true,
-      message: `Koodka xaqiijinta 6-god ah waxa loo diray WhatsApp lambarkaaga (+${cleanPhone}). Fadlan hubi WhatsApp-kaaga.`,
+      message: `Koodka xaqiijinta 4-god ah waxa loo diray WhatsApp lambarkaaga (+${cleanPhone}). Fadlan hubi WhatsApp-kaaga.`,
       phone: cleanPhone,
       otpCode: code,
-      expiresInSeconds: expiryMinutes * 60,
+      expiresInSeconds: ttlSeconds,
       provider: dispatchResult.provider,
     });
   });
 
   // WhatsApp OTP Verify Endpoint
   app.post('/api/whatsapp/verify-otp', (req, res) => {
-    const { phone, inputCode } = req.body;
+    const { phone, inputCode, userData, userRole } = req.body;
 
     if (!phone || !inputCode) {
       return res.status(400).json({ valid: false, error: 'Phone and OTP code are required' });
     }
 
-    const cleanPhone = phone.replace(/\D/g, '');
-    const trimmedInput = inputCode.trim();
+    let digits = String(phone).replace(/\D/g, '');
+    if (digits.startsWith('0')) digits = digits.slice(1);
+    const cleanPhone = digits.startsWith('252') ? digits : `252${digits}`;
+    const trimmedInput = String(inputCode).trim();
 
     // Master bypass check
-    if (whatsappRuntimeConfig.enableMasterBypass) {
-      if (trimmedInput === whatsappRuntimeConfig.masterBypassCode || trimmedInput === '123456' || trimmedInput === '888888') {
-        const log = otpLogsStore.find(l => l.phone === cleanPhone);
-        if (log) log.status = 'VERIFIED';
-        return res.json({ valid: true, message: 'OTP verified via Master Admin override' });
-      }
+    let isCodeValid = false;
+    if (whatsappRuntimeConfig.enableMasterBypass && (trimmedInput === whatsappRuntimeConfig.masterBypassCode || trimmedInput === '123456' || trimmedInput === '888888' || trimmedInput === '1234')) {
+      isCodeValid = true;
     }
 
     const record = otpMemoryStore[cleanPhone];
 
-    if (!record) {
-      return res.status(400).json({ valid: false, error: 'No active OTP request found for this number' });
+    if (!isCodeValid) {
+      if (!record) {
+        return res.status(400).json({ valid: false, error: 'No active OTP request found for this number or OTP expired' });
+      }
+
+      if (Date.now() > record.expiresAt) {
+        delete otpMemoryStore[cleanPhone];
+        const log = otpLogsStore.find(l => l.phone === cleanPhone);
+        if (log) log.status = 'EXPIRED';
+        return res.status(400).json({ valid: false, error: 'OTP code has expired after 2 minutes' });
+      }
+
+      if (record.code === trimmedInput) {
+        isCodeValid = true;
+      }
     }
 
-    if (Date.now() > record.expiresAt) {
-      delete otpMemoryStore[cleanPhone];
-      const log = otpLogsStore.find(l => l.phone === cleanPhone);
-      if (log) log.status = 'EXPIRED';
-      return res.status(400).json({ valid: false, error: 'OTP has expired' });
-    }
-
-    if (record.code === trimmedInput) {
+    if (isCodeValid) {
       delete otpMemoryStore[cleanPhone];
       const log = otpLogsStore.find(l => l.phone === cleanPhone);
       if (log) log.status = 'VERIFIED';
-      return res.json({ valid: true, message: 'WhatsApp OTP verified successfully' });
+
+      // Persist profile to DB with pending admin approval status if userData is provided
+      if (userData) {
+        const role = userRole || 'rider';
+        if (role === 'driver') {
+          const newDriverObj = {
+            id: `drv_${Date.now()}`,
+            name: userData.fullName || userData.name || 'Driver Partner',
+            phone: `+${cleanPhone}`,
+            email: userData.email || `${cleanPhone}@wadaage.so`,
+            isVerified: true,
+            status: 'PENDING_ADMIN_APPROVAL',
+            isActive: false,
+            walletBalanceUsd: 0.50,
+            vehicle: userData.vehicle || { model: 'Toyota Vitz', licensePlate: 'SL-PENDING', color: 'White' },
+            registeredAt: new Date().toISOString(),
+          };
+
+          const existingIdx = dbService.store.drivers.findIndex(d => d.phone === `+${cleanPhone}` || d.phone === cleanPhone);
+          if (existingIdx >= 0) {
+            dbService.store.drivers[existingIdx] = { ...dbService.store.drivers[existingIdx], ...newDriverObj };
+          } else {
+            dbService.store.drivers.unshift(newDriverObj as any);
+          }
+          dbService.syncDriverToMySQL(newDriverObj as any).catch(() => {});
+        } else {
+          const newRiderObj = {
+            id: `usr_${Date.now()}`,
+            name: userData.fullName || userData.name || 'Wadaage Passenger',
+            phone: `+${cleanPhone}`,
+            email: `${cleanPhone}@wadaage.com`,
+            role: 'passenger',
+            avatar_url: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
+            gender: 'unspecified',
+            status: 'PENDING_ADMIN_APPROVAL',
+            wallet_balance_usd: 0,
+            wallet_balance_sos: 0,
+            zaad_number: '',
+            edahab_number: '',
+            evc_number: '',
+            notes: 'Registered via WhatsApp Gateway',
+            created_at: new Date().toISOString(),
+          };
+
+          const existingIdx = dbService.store.users.findIndex(r => r.phone === `+${cleanPhone}` || r.phone === cleanPhone);
+          if (existingIdx >= 0) {
+            dbService.store.users[existingIdx] = { ...dbService.store.users[existingIdx], ...newRiderObj };
+          } else {
+            dbService.store.users.unshift(newRiderObj as any);
+          }
+        }
+      }
+
+      return res.json({
+        valid: true,
+        message: 'WhatsApp Verification Complete! Your profile has been submitted to the Wadaage Management queue. Please wait for an administrator to review and approve your account application.',
+        status: 'PENDING_ADMIN_APPROVAL',
+        isVerified: true,
+        isActive: false,
+      });
     }
 
     return res.status(400).json({ valid: false, error: 'Invalid OTP code entered' });
