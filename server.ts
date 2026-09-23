@@ -1436,8 +1436,7 @@ Return ONLY valid JSON matching this schema:
     if (
       syncDrvId && (
         (syncPassId && syncDrvId && syncPassId === syncDrvId) ||
-        (cleanSyncPassPhone && cleanSyncDrvPhone && cleanSyncPassPhone.length >= 6 && (cleanSyncPassPhone === cleanSyncDrvPhone || cleanSyncPassPhone.endsWith(cleanSyncDrvPhone) || cleanSyncDrvPhone.endsWith(cleanSyncPassPhone))) ||
-        (syncPassName && syncDrvName && syncPassName.trim().toLowerCase() === syncDrvName.trim().toLowerCase())
+        (cleanSyncPassPhone && cleanSyncDrvPhone && cleanSyncPassPhone.length >= 6 && (cleanSyncPassPhone === cleanSyncDrvPhone || cleanSyncPassPhone.endsWith(cleanSyncDrvPhone) || cleanSyncDrvPhone.endsWith(cleanSyncPassPhone)))
       )
     ) {
       return res.status(400).json({
@@ -1571,8 +1570,7 @@ Return ONLY valid JSON matching this schema:
 
     if (
       (acceptPassId && acceptDrvId && acceptPassId === acceptDrvId) ||
-      (cleanAccPassPhone && cleanAccDrvPhone && cleanAccPassPhone.length >= 6 && (cleanAccPassPhone === cleanAccDrvPhone || cleanAccPassPhone.endsWith(cleanAccDrvPhone) || cleanAccDrvPhone.endsWith(cleanAccPassPhone))) ||
-      (acceptPassName && acceptDrvName && acceptPassName.trim().toLowerCase() === acceptDrvName.trim().toLowerCase())
+      (cleanAccPassPhone && cleanAccDrvPhone && cleanAccPassPhone.length >= 6 && (cleanAccPassPhone === cleanAccDrvPhone || cleanAccPassPhone.endsWith(cleanAccDrvPhone) || cleanAccDrvPhone.endsWith(cleanAccPassPhone)))
     ) {
       return res.status(403).json({
         success: false,

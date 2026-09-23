@@ -1484,6 +1484,16 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return {};
   });
 
+  const [driverWalletTransactions, setDriverWalletTransactions] = useState<DriverWalletTransaction[]>(() => {
+    try {
+      const saved = localStorage.getItem('wadaage_driver_wallet_transactions');
+      if (saved) return safeJsonParse(saved, []);
+    } catch (e) {
+      console.error(e);
+    }
+    return [];
+  });
+
   const getDriverWalletBalance = useCallback((identifier: string): number => {
     if (!identifier) return 0;
 
@@ -1536,16 +1546,34 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
 
-    // 2. Evaluate balance values across all candidate alias sources
-    let maxPositiveBal = 0;
-    let foundBal: number | null = null;
+    // 2. Calculate authoritative net balance from driverWalletTransactions ledger if available
+    let ledgerSumUsd = 0;
+    let hasLedgerTransactions = false;
 
+    if (driverWalletTransactions && driverWalletTransactions.length > 0) {
+      driverWalletTransactions.forEach((tx) => {
+        const isCompleted = tx.status === 'completed';
+        if (!isCompleted) return;
+
+        const isMatch =
+          (tx.driverId && candidateKeys.has(tx.driverId)) ||
+          (tx.driverPhone && candidateKeys.has(tx.driverPhone)) ||
+          (tx.driverPhone && cleanInput && tx.driverPhone.replace(/\D/g, '').endsWith(cleanInput));
+
+        if (isMatch) {
+          hasLedgerTransactions = true;
+          ledgerSumUsd += Number(tx.amountUsd || 0);
+        }
+      });
+    }
+
+    // 3. Evaluate map and driver record balances
+    let mapBal: number | null = null;
     for (const key of candidateKeys) {
       if (driverWallets[key] !== undefined) {
         const val = Number(driverWallets[key]);
         if (!isNaN(val)) {
-          if (val > maxPositiveBal) maxPositiveBal = val;
-          if (foundBal === null) foundBal = val;
+          if (mapBal === null || val < mapBal) mapBal = val;
         }
       }
     }
@@ -1558,8 +1586,7 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
         : undefined;
 
       if (drvBalUsd !== undefined && !isNaN(drvBalUsd)) {
-        if (drvBalUsd > maxPositiveBal) maxPositiveBal = drvBalUsd;
-        if (foundBal === null) foundBal = drvBalUsd;
+        if (mapBal === null || drvBalUsd < mapBal) mapBal = drvBalUsd;
       }
     }
 
@@ -1571,37 +1598,31 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
         : undefined;
 
       if (userBalUsd !== undefined && !isNaN(userBalUsd)) {
-        if (userBalUsd > maxPositiveBal) maxPositiveBal = userBalUsd;
-        if (foundBal === null) foundBal = userBalUsd;
+        if (mapBal === null || userBalUsd < mapBal) mapBal = userBalUsd;
       }
     }
 
-    const finalVal = maxPositiveBal > 0 ? maxPositiveBal : (foundBal !== null ? Math.max(0, foundBal) : 0);
-    return finalVal;
-  }, [driverWallets, drivers, currentUser]);
+    if (mapBal !== null) {
+      return Math.max(0, Math.round(mapBal * 100) / 100);
+    }
+
+    if (hasLedgerTransactions) {
+      return Math.max(0, Math.round(ledgerSumUsd * 100) / 100);
+    }
+
+    return 0;
+  }, [driverWallets, drivers, currentUser, driverWalletTransactions]);
 
   // Current active driver balance
   const activeDriverId = currentUser?.role === 'driver' ? (currentUser.id || currentUser.phone || 'drv_01') : 'drv_01';
   const driverWalletBalanceUsd =
-    (currentUser?.role === 'driver' && currentUser.walletBalanceUsd !== undefined)
-      ? Number(currentUser.walletBalanceUsd)
-      : (currentUser?.role === 'driver' && (currentUser as any).wallet_balance_usd !== undefined)
-      ? Number((currentUser as any).wallet_balance_usd)
-      : (getDriverWalletBalance(activeDriverId) || (currentUser?.role === 'driver' && currentUser.phone ? getDriverWalletBalance(currentUser.phone) : 0));
+    getDriverWalletBalance(activeDriverId) ||
+    (currentUser?.role === 'driver' && currentUser.phone ? getDriverWalletBalance(currentUser.phone) : 0);
 
   const [lowBalanceLockoutAlert, setLowBalanceLockoutAlert] = useState<boolean>(false);
   const [selfOrderAlertMsg, setSelfOrderAlertMsg] = useState<string | null>(null);
 
   const dismissSelfOrderAlert = () => setSelfOrderAlertMsg(null);
-  const [driverWalletTransactions, setDriverWalletTransactions] = useState<DriverWalletTransaction[]>(() => {
-    try {
-      const saved = localStorage.getItem('wadaage_driver_wallet_transactions');
-      if (saved) return safeJsonParse(saved, []);
-    } catch (e) {
-      console.error(e);
-    }
-    return [];
-  });
 
   useEffect(() => {
     try {
@@ -1919,8 +1940,11 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
             }
           } else {
             // Driver is idle: check if driver is ONLINE and has wallet balance >= 0.10 USD (1,000 SLSH)
+            const activeDrvId = currentUser?.id || 'live_driver';
+            const activeDrvPhone = currentUser?.phone || '';
+            const curDrvBal = getDriverWalletBalance(activeDrvId) || (activeDrvPhone ? getDriverWalletBalance(activeDrvPhone) : 0);
             const minThresholdUsd = pricing?.driverMinWalletThresholdUsd || 0.10;
-            const isEligibleOnlineDriver = driverModeOnline && (driverWalletBalanceUsd >= minThresholdUsd);
+            const isEligibleOnlineDriver = driverModeOnline && (curDrvBal >= minThresholdUsd);
 
             if (!isEligibleOnlineDriver) {
               setIncomingDriverRequest(null);
@@ -2020,8 +2044,11 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       if (type === 'RIDE_REQUESTED') {
         if (role === 'driver') {
+          const activeDrvId = currentUser?.id || 'live_driver';
+          const activeDrvPhone = currentUser?.phone || '';
+          const curDrvBal = getDriverWalletBalance(activeDrvId) || (activeDrvPhone ? getDriverWalletBalance(activeDrvPhone) : 0);
           const minThresholdUsd = pricing?.driverMinWalletThresholdUsd || 0.10;
-          const isEligibleOnlineDriver = driverModeOnline && (driverWalletBalanceUsd >= minThresholdUsd);
+          const isEligibleOnlineDriver = driverModeOnline && (curDrvBal >= minThresholdUsd);
 
           if (!isEligibleOnlineDriver) {
             setIncomingDriverRequest(null);
@@ -2950,8 +2977,7 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (
       !bookingForSomeoneElse &&
       ((currentPassId && activeDriverId && currentPassId === activeDriverId) ||
-       (cleanPPhone && cleanDPhone && cleanPPhone.length >= 6 && cleanPPhone === cleanDPhone) ||
-       (currentPassName && activeDriverName && currentPassName.trim().toLowerCase() === activeDriverName.trim().toLowerCase()))
+       (cleanPPhone && cleanDPhone && cleanPPhone.length >= 6 && (cleanPPhone === cleanDPhone || cleanPPhone.endsWith(cleanDPhone) || cleanDPhone.endsWith(cleanPPhone))))
     ) {
       console.warn('Action Denied: You cannot book or accept a ride request from your own account.');
       setSelfOrderAlertMsg('Action Denied: You cannot book or accept a ride request from your own account.');
@@ -3820,8 +3846,7 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       if (
         (passId && drvId && passId === drvId) ||
-        (cleanPassPhone && cleanDrvPhone && cleanPassPhone.length >= 6 && (cleanPassPhone === cleanDrvPhone || cleanPassPhone.endsWith(cleanDrvPhone) || cleanDrvPhone.endsWith(cleanPassPhone))) ||
-        (passName && drvName && passName.trim().toLowerCase() === drvName.trim().toLowerCase())
+        (cleanPassPhone && cleanDrvPhone && cleanPassPhone.length >= 6 && (cleanPassPhone === cleanDrvPhone || cleanPassPhone.endsWith(cleanDrvPhone) || cleanDrvPhone.endsWith(cleanPassPhone)))
       ) {
         console.warn('[Self-Order Barrier] Action Denied: Driver cannot accept a ride request from their own account.');
         setIncomingDriverRequest(null);
@@ -3831,6 +3856,23 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
           success: false,
           conflict: true,
           message: 'Action Denied: You cannot book or accept a ride request from your own account.',
+        };
+      }
+
+      // Wallet Lockout Guard: Lock out driver if prepaid balance < 1,000 SLSH ($0.10 USD)
+      const currentDrvBal = getDriverWalletBalance(drvId) || (drvPhone ? getDriverWalletBalance(drvPhone) : 0);
+      const minThreshUsd = pricing.driverMinWalletThresholdUsd || 0.10;
+
+      if (currentDrvBal < minThreshUsd) {
+        console.warn('[Wallet Lockout Barrier] Action Denied: Prepaid wallet balance below 1,000 SLSH ($0.10 USD).');
+        setIncomingDriverRequest(null);
+        notificationService.stopEmergencyOrderRingtone();
+        setLowBalanceLockoutAlert(true);
+        setDriverModeOnline(false);
+        return {
+          success: false,
+          conflict: true,
+          message: 'Action Denied: Your Wadaage wallet balance is below 1,000 SLSH ($0.10 USD). Please top up to accept rides.',
         };
       }
 
@@ -4007,13 +4049,19 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     const currentAssignedId = requestToTransfer.assignedDriverId || currentUser?.id || '';
-    const otherAvailableDrivers = drivers.filter(
-      (d) => d.id !== currentAssignedId
-    );
+    const minThresholdUsd = pricing?.driverMinWalletThresholdUsd || 0.10;
+    const eligibleTransferDrivers = drivers.filter((d) => {
+      const bal = getDriverWalletBalance(d.id) || (d.phone ? getDriverWalletBalance(d.phone) : 0);
+      return d.id !== currentAssignedId && d.status !== 'offline' && bal >= minThresholdUsd;
+    });
 
     const targetDriver = targetDriverId
-      ? drivers.find((d) => d.id === targetDriverId)
-      : otherAvailableDrivers[0] || drivers[0];
+      ? eligibleTransferDrivers.find((d) => d.id === targetDriverId)
+      : eligibleTransferDrivers[0];
+
+    if (!targetDriver) {
+      return { success: false, message: 'No eligible online drivers with sufficient wallet float (>1,000 SLSH) available to transfer.' };
+    }
 
     const nextDriverName = targetDriver ? targetDriver.name : 'Captain';
     const nextDriverVehicle = targetDriver ? targetDriver.vehicle.model : 'Wadaage Vehicle';
