@@ -297,27 +297,37 @@ export const LeafletInteractiveMap: React.FC<LeafletInteractiveMapProps> = ({
       }).addTo(group);
     }
 
-    // 4. Live Drivers on Road
+    // 4. Live Drivers on Road (High-Resolution Professional White Vehicle Marker Layer with Heading Rotation)
     drivers.forEach((driver) => {
       const dLat = driver.currentLocation?.lat ?? (driver as any).currentLat ?? 9.5600;
       const dLng = driver.currentLocation?.lng ?? (driver as any).currentLng ?? 44.0650;
-      const carPlate = driver.vehicle?.licensePlate ?? (driver as any).carPlate ?? 'HGA-101';
+      const carPlate = driver.vehicle?.licensePlate ?? (driver as any).carPlate ?? 'SL-2044';
+      const heading = (driver as any).headingDegrees || (driver as any).heading || 0;
 
       const driverIcon = L.divIcon({
-        className: 'custom-driver-marker',
+        className: 'custom-white-car-marker',
         html: `
-          <div class="flex flex-col items-center -translate-x-1/2 -translate-y-1/2 cursor-pointer group">
+          <div class="relative flex flex-col items-center justify-center pointer-events-auto cursor-pointer group">
             ${role === 'admin' ? `
-            <div class="px-1.5 py-0.5 bg-slate-900/90 border border-slate-700 text-slate-200 text-[9px] font-bold rounded shadow mb-0.5 whitespace-nowrap">
-              ${(driver?.name || 'Driver').split(' ')[0]} (${carPlate})
+            <div class="absolute -top-6 px-2 py-0.5 bg-slate-950/90 border border-emerald-500/40 text-emerald-300 text-[9px] font-black rounded-lg shadow-xl whitespace-nowrap z-20">
+              ${(driver?.name || 'Captain').split(' ')[0]} • ${carPlate}
             </div>
             ` : ''}
-            <div class="w-7 h-7 rounded-full bg-[#021820] border-2 border-[#00E575] flex items-center justify-center text-[#00E575] shadow-lg group-hover:scale-110 transition">
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9C18.7 10.6 16 10 16 10s-1.3-1.4-2.2-2.3c-.5-.4-1.1-.7-1.8-.7H5c-.6 0-1.1.4-1.4.9l-1.4 2.9A3.7 3.7 0 0 0 2 12v4c0 .6.4 1 1 1h2"/><circle cx="7" cy="17" r="2"/><path d="M9 17h6"/><circle cx="17" cy="17" r="2"/></svg>
+            <div class="relative w-8 h-8 flex items-center justify-center transition-transform duration-300 ease-out" style="transform: rotate(${heading}deg);">
+              <div class="absolute inset-0 rounded-full bg-emerald-500/20 animate-pulse"></div>
+              <div class="w-8 h-8 rounded-full bg-slate-950 border-2 border-emerald-400 shadow-[0_0_12px_rgba(0,229,117,0.5)] flex items-center justify-center text-white">
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="#FFFFFF" stroke="#00E575" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9C18.7 10.6 16 10 16 10s-1.3-1.4-2.2-2.3c-.5-.4-1.1-.7-1.8-.7H5c-.6 0-1.1.4-1.4.9l-1.4 2.9A3.7 3.7 0 0 0 2 12v4c0 .6.4 1 1 1h2"/>
+                  <circle cx="7" cy="17" r="2" fill="#00E575"/>
+                  <path d="M9 17h6"/>
+                  <circle cx="17" cy="17" r="2" fill="#00E575"/>
+                </svg>
+              </div>
             </div>
           </div>
         `,
-        iconSize: [30, 30],
+        iconSize: [32, 32],
+        iconAnchor: [16, 16],
       });
 
       L.marker([dLat, dLng], { icon: driverIcon, zIndexOffset: 300 }).addTo(group);

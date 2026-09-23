@@ -3636,8 +3636,8 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
         backgroundCheck: isAutoApproved,
       },
       currentLocation: {
-        lat: 9.560 + (Math.random() - 0.5) * 0.015,
-        lng: 44.065 + (Math.random() - 0.5) * 0.015,
+        lat: 9.5600,
+        lng: 44.0650,
       },
       vehicle: {
         model: driverData.vehicleModel || 'Toyota Vitz',
