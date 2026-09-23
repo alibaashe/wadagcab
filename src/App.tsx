@@ -27,6 +27,8 @@ const MainAppContent: React.FC = () => {
     activeCallSession,
     isCallModalOpen,
     setIsCallModalOpen,
+    selfOrderAlertMsg,
+    dismissSelfOrderAlert,
   } = useRide();
 
   // Helper to parse current URL route/view - Standalone APK & PWA priority
@@ -243,6 +245,25 @@ const MainAppContent: React.FC = () => {
             onClose={() => setIsCallModalOpen(false)}
           />
         )}
+        {selfOrderAlertMsg && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fade-in font-sans">
+            <div className="bg-slate-900 border border-rose-500/50 rounded-3xl p-6 max-w-sm w-full text-center space-y-4 shadow-2xl">
+              <div className="mx-auto w-12 h-12 rounded-2xl bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-rose-400">
+                <Shield className="w-6 h-6 text-rose-400" />
+              </div>
+              <div>
+                <h3 className="text-sm font-black text-white uppercase tracking-wider">Action Denied</h3>
+                <p className="text-xs font-semibold text-rose-300 mt-2">{selfOrderAlertMsg}</p>
+              </div>
+              <button
+                onClick={dismissSelfOrderAlert}
+                className="w-full py-3 bg-rose-500 hover:bg-rose-400 text-white font-black rounded-xl text-xs uppercase tracking-wider transition cursor-pointer"
+              >
+                Understood
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -284,6 +305,25 @@ const MainAppContent: React.FC = () => {
             onClose={() => setIsCallModalOpen(false)}
           />
         )}
+        {selfOrderAlertMsg && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-sm animate-fade-in font-sans">
+            <div className="bg-slate-900 border border-rose-500/50 rounded-3xl p-6 max-w-sm w-full text-center space-y-4 shadow-2xl">
+              <div className="mx-auto w-12 h-12 rounded-2xl bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-rose-400">
+                <Shield className="w-6 h-6 text-rose-400" />
+              </div>
+              <div>
+                <h3 className="text-sm font-black text-white uppercase tracking-wider">Action Denied</h3>
+                <p className="text-xs font-semibold text-rose-300 mt-2">{selfOrderAlertMsg}</p>
+              </div>
+              <button
+                onClick={dismissSelfOrderAlert}
+                className="w-full py-3 bg-rose-500 hover:bg-rose-400 text-white font-black rounded-xl text-xs uppercase tracking-wider transition cursor-pointer"
+              >
+                Understood
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -321,6 +361,25 @@ const MainAppContent: React.FC = () => {
             currentUserId={currentUser?.id || ''}
             onClose={() => setIsCallModalOpen(false)}
           />
+        )}
+        {selfOrderAlertMsg && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-sm animate-fade-in font-sans">
+            <div className="bg-slate-900 border border-rose-500/50 rounded-3xl p-6 max-w-sm w-full text-center space-y-4 shadow-2xl">
+              <div className="mx-auto w-12 h-12 rounded-2xl bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-rose-400">
+                <Shield className="w-6 h-6 text-rose-400" />
+              </div>
+              <div>
+                <h3 className="text-sm font-black text-white uppercase tracking-wider">Action Denied</h3>
+                <p className="text-xs font-semibold text-rose-300 mt-2">{selfOrderAlertMsg}</p>
+              </div>
+              <button
+                onClick={dismissSelfOrderAlert}
+                className="w-full py-3 bg-rose-500 hover:bg-rose-400 text-white font-black rounded-xl text-xs uppercase tracking-wider transition cursor-pointer"
+              >
+                Understood
+              </button>
+            </div>
+          </div>
         )}
       </div>
     );

@@ -234,6 +234,8 @@ interface RideContextType {
   adminDirectCreditDriverWallet: (driverId: string, amountSos: number, note?: string) => void;
   lowBalanceLockoutAlert: boolean;
   dismissLowBalanceAlert: () => void;
+  selfOrderAlertMsg: string | null;
+  dismissSelfOrderAlert: () => void;
   // Dynamic Flow & Stacking Actions
   autoAcceptOnRouteShares: boolean;
   toggleAutoAcceptShares: () => void;
@@ -1588,6 +1590,9 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
       : (getDriverWalletBalance(activeDriverId) || (currentUser?.role === 'driver' && currentUser.phone ? getDriverWalletBalance(currentUser.phone) : 0));
 
   const [lowBalanceLockoutAlert, setLowBalanceLockoutAlert] = useState<boolean>(false);
+  const [selfOrderAlertMsg, setSelfOrderAlertMsg] = useState<string | null>(null);
+
+  const dismissSelfOrderAlert = () => setSelfOrderAlertMsg(null);
   const [driverWalletTransactions, setDriverWalletTransactions] = useState<DriverWalletTransaction[]>(() => {
     try {
       const saved = localStorage.getItem('wadaage_driver_wallet_transactions');
@@ -2742,22 +2747,33 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
   ) => {
     const amountUsd = isSos ? Math.round((amountUsdOrSos / 10000) * 100) / 100 : Math.round(amountUsdOrSos * 100) / 100;
     const amountSos = isSos ? Math.round(amountUsdOrSos) : Math.round(amountUsdOrSos * 10000);
-    const targetDriver = drivers.find((d) => d.id === driverId || d.phone === driverId) || {
+
+    const cleanInput = driverId ? String(driverId).replace(/\D/g, '') : '';
+    const foundDriver = drivers.find((d) =>
+      d.id === driverId ||
+      d.phone === driverId ||
+      (d.name && d.name.toLowerCase().includes(driverId.toLowerCase())) ||
+      (cleanInput && d.phone && String(d.phone).replace(/\D/g, '').endsWith(cleanInput))
+    ) || {
       id: driverId,
       name: 'Driver Partner',
       phone: driverId,
       walletBalanceUsd: 0,
     };
 
+    const targetId = foundDriver.id || driverId;
+    const targetPhone = foundDriver.phone || driverId;
+    const targetName = foundDriver.name || 'Driver Partner';
+
     // Apply balance update across all key aliases
-    const calculatedNewBalanceUsd = applyDriverBalanceUpdate(targetDriver.id, targetDriver.phone, amountUsd, false);
+    const calculatedNewBalanceUsd = applyDriverBalanceUpdate(targetId, targetPhone, amountUsd, false);
 
     // 3. Create completed ledger transaction
     const newTx: DriverWalletTransaction = {
       id: `dtx_admin_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
-      driverId: targetDriver.id,
-      driverName: targetDriver.name,
-      driverPhone: targetDriver.phone,
+      driverId: targetId,
+      driverName: targetName,
+      driverPhone: targetPhone,
       type: 'topup',
       amountUsd,
       amountSos,
@@ -2768,7 +2784,7 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
       status: 'completed',
       verificationMethod: 'admin_confirmation',
       verifiedAt: new Date().toISOString().replace('T', ' ').substring(0, 16),
-      adminNote: note || `Directly credited ${amountSos.toLocaleString()} SOS ($${amountUsd.toFixed(2)}) by Dispatch Admin`,
+      adminNote: note || `Directly credited ${amountSos.toLocaleString()} SLSH ($${amountUsd.toFixed(2)}) by Dispatch Admin`,
     };
 
     setDriverWalletTransactions((prev) => {
@@ -2783,9 +2799,10 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         ...newTx,
-        user_id: targetDriver.id,
-        driverId: targetDriver.id,
-        driverPhone: targetDriver.phone,
+        user_id: targetId,
+        driverId: targetId,
+        driverPhone: targetPhone,
+        driverName: targetName,
         transaction_type: 'topup',
         amount_usd: amountUsd,
         amountUsd,
@@ -2797,15 +2814,15 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     // Broadcast update with absolute newBalanceUsd so remote listeners do not apply double addition
     broadcastRideEvent('DRIVER_WALLET_UPDATED', {
-      driverId: targetDriver.id,
-      driverPhone: targetDriver.phone,
+      driverId: targetId,
+      driverPhone: targetPhone,
       amountUsd,
       amountSos,
       newBalanceUsd: calculatedNewBalanceUsd,
       tx: newTx,
     });
 
-    const isThisDriver = currentUser && (driverId === currentUser.id || (targetDriver.phone && currentUser.phone === targetDriver.phone));
+    const isThisDriver = currentUser && (driverId === currentUser.id || (targetPhone && currentUser.phone === targetPhone));
     if (isThisDriver) {
       setDriverModeOnline(true);
       setLowBalanceLockoutAlert(false);
@@ -2919,6 +2936,29 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
     targetBidPriceUsd?: number,
     scheduledTime?: string
   ) => {
+    // Self-Order Barrier: Prevent passenger from booking/accepting a self-order if logged in as driver
+    const currentPassId = currentUser?.id || 'passenger_default';
+    const currentPassPhone = currentUser?.phone || '';
+    const currentPassName = currentUser?.name || '';
+    const activeDriverId = currentUser?.role === 'driver' ? (currentUser.id || currentUser.phone || 'drv_01') : '';
+    const activeDriverPhone = currentUser?.role === 'driver' ? (currentUser.phone || '') : '';
+    const activeDriverName = currentUser?.role === 'driver' ? (currentUser.name || '') : '';
+
+    const cleanPPhone = currentPassPhone ? currentPassPhone.replace(/\D/g, '') : '';
+    const cleanDPhone = activeDriverPhone ? activeDriverPhone.replace(/\D/g, '') : '';
+
+    if (
+      !bookingForSomeoneElse &&
+      ((currentPassId && activeDriverId && currentPassId === activeDriverId) ||
+       (cleanPPhone && cleanDPhone && cleanPPhone.length >= 6 && cleanPPhone === cleanDPhone) ||
+       (currentPassName && activeDriverName && currentPassName.trim().toLowerCase() === activeDriverName.trim().toLowerCase()))
+    ) {
+      console.warn('Action Denied: You cannot book or accept a ride request from your own account.');
+      setSelfOrderAlertMsg('Action Denied: You cannot book or accept a ride request from your own account.');
+      isBookingRideRef.current = false;
+      return;
+    }
+
     // Debounce & Idempotency Lock: Prevent rapid double-clicks from creating duplicate orders
     if (isBookingRideRef.current) {
       console.warn('Booking already in progress. Ignoring duplicate click.');
@@ -3765,6 +3805,34 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
           avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150&auto=format&fit=crop&q=80',
           vehicle: { model: 'Toyota Vitz', licensePlate: 'SL-2044', color: 'White' },
         };
+
+      // Self-Order Barrier: Prevent driver from accepting a ride request generated by their own account
+      const passId = active.passengerId || (active as any).passenger_id;
+      const passPhone = active.passengerPhone || (active as any).passenger_phone;
+      const passName = active.passengerName || (active as any).passenger_name;
+
+      const drvId = driverObj?.id || idToAssign || currentUser?.id;
+      const drvPhone = driverObj?.phone || currentUser?.phone;
+      const drvName = driverObj?.name || currentUser?.name;
+
+      const cleanPassPhone = passPhone ? String(passPhone).replace(/\D/g, '') : '';
+      const cleanDrvPhone = drvPhone ? String(drvPhone).replace(/\D/g, '') : '';
+
+      if (
+        (passId && drvId && passId === drvId) ||
+        (cleanPassPhone && cleanDrvPhone && cleanPassPhone.length >= 6 && (cleanPassPhone === cleanDrvPhone || cleanPassPhone.endsWith(cleanDrvPhone) || cleanDrvPhone.endsWith(cleanPassPhone))) ||
+        (passName && drvName && passName.trim().toLowerCase() === drvName.trim().toLowerCase())
+      ) {
+        console.warn('[Self-Order Barrier] Action Denied: Driver cannot accept a ride request from their own account.');
+        setIncomingDriverRequest(null);
+        notificationService.stopEmergencyOrderRingtone();
+        setSelfOrderAlertMsg('Action Denied: You cannot book or accept a ride request from your own account.');
+        return {
+          success: false,
+          conflict: true,
+          message: 'Action Denied: You cannot book or accept a ride request from your own account.',
+        };
+      }
 
       const initialWaypoints: WaypointSequenceItem[] = active.optimalWaypointsSequence && active.optimalWaypointsSequence.length > 0
         ? active.optimalWaypointsSequence
@@ -5062,6 +5130,8 @@ export const RideProvider: React.FC<{ children: React.ReactNode }> = ({ children
         adminDirectCreditDriverWallet,
         lowBalanceLockoutAlert,
         dismissLowBalanceAlert,
+        selfOrderAlertMsg,
+        dismissSelfOrderAlert,
         autoAcceptOnRouteShares,
         toggleAutoAcceptShares,
         dispatchBatchPoolRideNow,
